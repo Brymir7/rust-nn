@@ -44,12 +44,57 @@ impl BinaryOp<f64> for MulOp {
     }
 }
 
-#[derive(Debug)]
 enum Tensor {
     F32 { data: Vec<f32>, shape: Vec<usize> },
     F64 { data: Vec<f64>, shape: Vec<usize> },
 }
+impl Debug for Tensor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Tensor::F32 { data, shape } => {
+                write!(f, "Tensor::F32 {{\n")?;
+                format_tensor(f, data, shape, 0)?;
+                write!(f, "\nshape: {:?}\n}}", shape)
+            }
+            Tensor::F64 { data, shape } => {
+                write!(f, "Tensor::F64 {{\n")?;
+                format_tensor(f, data, shape, 0)?;
+                write!(f, "\nshape: {:?}\n}}", shape)
+            }
+        }
+    }
+}
 
+fn format_tensor<T: Debug>(
+    f: &mut std::fmt::Formatter<'_>,
+    data: &[T],
+    shape: &[usize],
+    depth: usize,
+) -> std::fmt::Result {
+    let indent = "  ".repeat(depth + 1);
+
+    if shape.len() <= 1 {
+        return write!(f, "{}[{:?}]", indent, data);
+    }
+    write!(f, "{}[", indent)?;
+
+    let dim_size = shape[0];
+    let sub_dim_size: usize = shape[1..].iter().product();
+
+    for i in 0..dim_size {
+        if i > 0 {
+            write!(f, ",\n")?;
+        } else {
+            write!(f, "\n")?;
+        }
+
+        let start = i * sub_dim_size;
+        let end = start + sub_dim_size;
+        format_tensor(f, &data[start..end], &shape[1..], depth + 1)?;
+    }
+
+    write!(f, "\n{}]", indent)
+}
 impl Tensor {
     fn new_f32(data: Vec<f32>, shape: Option<Vec<usize>>) -> Self {
         let shape = match shape {
@@ -122,21 +167,62 @@ impl Tensor {
         }
     }
 
-    fn product(&self) -> f64 {
-        match self {
-            Tensor::F32 { data, .. } => data.iter().fold(1.0f32, |acc, &val| acc * val) as f64,
-            Tensor::F64 { data, .. } => data.iter().fold(1.0f64, |acc, &val| acc * val),
-        }
-    }
-    fn concat(&self, other: &Tensor) -> Tensor {
+    fn concat(&self, other: &Tensor, dim: Option<usize>) -> Tensor {
         match &self {
             Tensor::F32 { data, shape } => match &other {
                 Tensor::F32 {
                     data: other_data,
-                    shape: _,
+                    shape: other_shape,
                 } => {
-                    let new_data = [data.as_slice(), other_data.as_slice()].concat();
-                    Tensor::with_shape_f32(new_data, shape.clone())
+                    match dim {
+                        // dim = 0
+                        None => {
+                            assert_eq!(
+                                shape[0], other_shape[0],
+                                "Shapes must match for concatenation"
+                            );
+                            let mut new_data = data.clone();
+                            new_data.extend(other_data);
+                            let mut new_shape = shape.clone();
+                            new_shape[0] += other_shape[0];
+                            Tensor::with_shape_f32(new_data, new_shape)
+                        }
+                        Some(dim) => {
+                            for (i, (a, b)) in shape.iter().zip(other_shape.iter()).enumerate() {
+                                if i == dim {
+                                    continue;
+                                } else {
+                                    assert_eq!(a, b, "Shapes must match for concatenation");
+                                }
+                            }
+                            let mut new_shape = shape.clone();
+                            new_shape[dim] += other_shape[dim];
+                            let mut new_data = Vec::with_capacity(new_shape.iter().product());
+                            let outer_dim = shape[..dim].iter().product();
+                            let inner_dim: usize = shape[dim + 1..].iter().product();
+                            let self_dim = shape[dim];
+                            let other_dim = other_shape[dim];
+
+                            for outer in 0..outer_dim {
+                                let outer_offset = outer * self_dim * inner_dim;
+                                for d1 in 0..self_dim {
+                                    let start = outer_offset + d1 * inner_dim;
+                                    for k in 0..inner_dim {
+                                        new_data.push(data[start + k]);
+                                    }
+                                }
+                                let outer_offset = outer * other_dim * inner_dim;
+                                for d2 in 0..other_dim {
+                                    let start = outer_offset + d2  * inner_dim;
+                                    for k in 0..inner_dim {
+                                        new_data.push(other_data[start + k]);
+                                    }
+                                }
+                            }
+
+                            Tensor::with_shape_f32(new_data, new_shape)
+                        }
+                    }
                 }
                 _ => panic!("Cannot concatenate tensors of different types (f32 vs f64)"),
             },
@@ -302,9 +388,162 @@ impl_tensor_op!(Mul, mul, *, "multiply");
 impl_tensor_op!(Div, div, /, "divide");
 
 fn main() {
-    let tensor = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
-    let res = tensor.sum();
+    let tensor = Tensor::with_shape_f32(
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        vec![2, 3, 2],
+    );
+    let tensor2 = Tensor::with_shape_f32(
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        vec![2, 3, 2],
+    );
+    let res = tensor.concat(&tensor2, Some(1));
     println!("{:?}", res);
+
+    tests();
 }
 
-fn tests() {}
+fn tests() {
+    {
+        let t1 = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
+        let t2 = Tensor::with_shape_f32(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
+        let result = t1.concat(&t2, None);
+
+        match result {
+            Tensor::F32 { data, shape } => {
+                assert_eq!(
+                    shape,
+                    vec![4, 2],
+                    "Shape should be [4, 2] when concatenating along default dimension"
+                );
+                assert_eq!(
+                    data,
+                    vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                    "Data should be concatenated correctly"
+                );
+            }
+            _ => panic!("Expected F32 tensor result"),
+        }
+    }
+
+    {
+        let t1 = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
+        let t2 = Tensor::with_shape_f32(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
+        let result = t1.concat(&t2, Some(0));
+
+        match result {
+            Tensor::F32 { data, shape } => {
+                assert_eq!(
+                    shape,
+                    vec![4, 2],
+                    "Shape should be [4, 2] when concatenating along dim 0"
+                );
+                assert_eq!(
+                    data,
+                    vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                    "Data should be concatenated correctly"
+                );
+            }
+            _ => panic!("Expected F32 tensor result"),
+        }
+    }
+
+    {
+        let t1 = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
+        let t2 = Tensor::with_shape_f32(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
+        let result = t1.concat(&t2, Some(1));
+
+        match result {
+            Tensor::F32 { data, shape } => {
+                assert_eq!(
+                    shape,
+                    vec![2, 4],
+                    "Shape should be [2, 4] when concatenating along dim 1"
+                );
+                assert_eq!(
+                    data,
+                    vec![1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0],
+                    "Data should be interleaved correctly when concatenating along dim 1"
+                );
+            }
+            _ => panic!("Expected F32 tensor result"),
+        }
+    }
+
+    {
+        let t1 =
+            Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], vec![2, 2, 2]);
+        let t2 = Tensor::with_shape_f32(
+            vec![9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0],
+            vec![2, 2, 2],
+        );
+
+        let result0 = t1.concat(&t2, Some(0));
+        match result0 {
+            Tensor::F32 {
+                data: data0,
+                shape: shape0,
+            } => {
+                assert_eq!(
+                    shape0,
+                    vec![4, 2, 2],
+                    "Shape should be [4, 2, 2] when concatenating along dim 0"
+                );
+                assert_eq!(
+                    data0,
+                    vec![
+                        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+                        15.0, 16.0
+                    ],
+                    "Data should be concatenated correctly along dim 0"
+                );
+            }
+            _ => panic!("Expected F32 tensor result"),
+        }
+
+        let result1 = t1.concat(&t2, Some(1));
+        match result1 {
+            Tensor::F32 {
+                data: data1,
+                shape: shape1,
+            } => {
+                assert_eq!(
+                    shape1,
+                    vec![2, 4, 2],
+                    "Shape should be [2, 4, 2] when concatenating along dim 1"
+                );
+                assert_eq!(
+                    data1,
+                    vec![
+                        1.0, 2.0, 3.0, 4.0, 9.0, 10.0, 11.0, 12.0, 5.0, 6.0, 7.0, 8.0, 13.0, 14.0,
+                        15.0, 16.0
+                    ],
+                    "Data should be interleaved correctly when concatenating along dim 1"
+                );
+            }
+            _ => panic!("Expected F32 tensor result"),
+        }
+
+        let result2 = t1.concat(&t2, Some(2));
+        match result2 {
+            Tensor::F32 {
+                data: data2,
+                shape: shape2,
+            } => {
+                assert_eq!(
+                    shape2,
+                    vec![2, 2, 4],
+                    "Shape should be [2, 2, 4] when concatenating along dim 2"
+                );
+                assert_eq!(
+                    data2,
+                    vec![
+                        1.0, 2.0, 9.0, 10.0, 3.0, 4.0, 11.0, 12.0, 5.0, 6.0, 13.0, 14.0, 7.0, 8.0,
+                        15.0, 16.0
+                    ],
+                    "Data should be interleaved correctly when concatenating along dim 2"
+                );
+            }
+            _ => panic!("Expected F32 tensor result"),
+        }
+    }
+}
