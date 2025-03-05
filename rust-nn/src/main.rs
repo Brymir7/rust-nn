@@ -1,7 +1,9 @@
 use once_cell::unsync::Lazy;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::{Add, Div, Mul, Sub};
+use std::rc::Rc;
 use std::sync::Mutex;
 
 trait BinaryOp<T> {
@@ -65,6 +67,9 @@ impl TensorContext {
     fn get_tensor(&self, id: TensorHandle) -> Option<&Tensor> {
         self.all_tensors.get(id.0)
     }
+    fn get_mut_tensor(&mut self, id: TensorHandle) -> Option<&mut Tensor> {
+        self.all_tensors.get_mut(id.0)
+    }
 }
 
 thread_local! {
@@ -84,6 +89,16 @@ fn get_tensor(id: TensorHandle) -> Option<Tensor> {
     TENSOR_CONTEXT.with(|ctx| {
         let ctx = ctx.borrow();
         ctx.get_tensor(id).cloned()
+    })
+}
+fn with_mut_tensor<F, R>(id: TensorHandle, f: F) -> Option<R>
+where
+    F: FnOnce(&mut Tensor) -> R,
+{
+    TENSOR_CONTEXT.with(|ctx| {
+        let mut ctx_ref = ctx.borrow_mut();
+        let tensor = ctx_ref.get_mut_tensor(id)?;
+        Some(f(tensor))
     })
 }
 
@@ -133,6 +148,7 @@ enum Tensor {
         data: Vec<f32>,
         shape: Vec<usize>,
         graph: TensorOperation,
+        grad: Option<Vec<f32>>,
     },
     F64 {
         data: Vec<f64>,
@@ -147,11 +163,13 @@ impl Debug for Tensor {
                 data,
                 shape,
                 graph,
+                grad,
             } => {
                 write!(f, "Tensor::F32 {:?}{{\n", id)?;
                 format_tensor(f, data, shape, 0)?;
                 write!(f, "\nshape: {:?}\n}}", shape)?;
-                write!(f, "\ngraph: {:?}\n}}", graph)
+                write!(f, "\ngraph: {:?}\n}}", graph);
+                write!(f, "\ngrad:  {:?}\n}}", grad)
             }
             Tensor::F64 { data, shape } => {
                 write!(f, "Tensor::F64 {{\n")?;
@@ -216,8 +234,11 @@ impl Tensor {
             data,
             shape,
             graph: TensorOperation::None,
+            grad: None,
         };
         let id = register_tensor(tensor);
+        // but maybe also not good, but better than this read keep alive which doesnt change on mutation?
+        // return the id instead and have utility functions for printing and enable all ops on TensorHandles which will just access the global context
         return get_tensor(id).unwrap();
     }
     fn from_op(data: Vec<f32>, shape: Vec<usize>, op: TensorOperation) -> Self {
@@ -226,6 +247,7 @@ impl Tensor {
             data: data,
             shape: shape,
             graph: op,
+            grad: None,
         };
         let id = register_tensor(tensor);
         return get_tensor(id).unwrap();
@@ -267,6 +289,52 @@ impl Tensor {
     fn from_vec_f64(data: Vec<f64>) -> Self {
         Self::new_f64(data, None)
     }
+    fn backward(&self) {
+        let mut queue: VecDeque<(TensorOperation, Tensor)> = VecDeque::new(); // op and grad on result // prev grad
+        match self {
+            Tensor::F32 {
+                id,
+                data,
+                shape,
+                graph,
+                grad,
+            } => {
+                queue.push_back((graph.clone(), Tensor::from_vec_f32(vec![1.0])));
+                // loss has 1.0 grad
+            }
+            _ => todo!(),
+        }
+
+        while let Some((tensor_h, prev_grad)) = queue.pop_front() {
+            match tensor_h {
+                TensorOperation::Add { left, right } => {
+                    todo!()
+                }
+                TensorOperation::Sum { input } => {
+                    with_mut_tensor(input.clone(), |tensor| match tensor {
+                        Tensor::F32 {
+                            data,
+                            shape,
+                            grad,
+                            ..
+                        } => {
+                            let grad_data = vec![1.0; data.len()];
+                            *grad = Some(grad_data);
+                        }
+                        _ => todo!(),
+                    });
+                    
+                }
+                TensorOperation::Mul { left, right } => {
+                    todo!()
+                }
+                _ => {
+                    todo!()
+                }
+            }
+        }
+    }
+
     // todo should be along axis
     fn sum(&self) -> Tensor {
         match self {
@@ -567,6 +635,7 @@ fn tests() {
                 data,
                 shape,
                 graph,
+                grad: None,
             } => {
                 assert_eq!(
                     shape,
@@ -594,6 +663,7 @@ fn tests() {
                 data,
                 shape,
                 graph,
+                grad: None,
             } => {
                 assert_eq!(
                     shape,
@@ -621,6 +691,7 @@ fn tests() {
                 data,
                 shape,
                 graph,
+                grad: None,
             } => {
                 assert_eq!(
                     shape,
@@ -652,6 +723,7 @@ fn tests() {
                 data: data0,
                 shape: shape0,
                 graph: graph0,
+                grad: None,
             } => {
                 assert_eq!(
                     shape0,
@@ -677,6 +749,7 @@ fn tests() {
                 data: data1,
                 shape: shape1,
                 graph: graph1,
+                grad: None,
             } => {
                 assert_eq!(
                     shape1,
@@ -702,6 +775,7 @@ fn tests() {
                 data: data2,
                 shape: shape2,
                 graph: graph1,
+                grad: None,
             } => {
                 assert_eq!(
                     shape2,
@@ -721,94 +795,88 @@ fn tests() {
         }
     }
 }
-fn get_computation_graph(currTensor: &Tensor, graph: &mut Vec<TensorOperation>) {
-    match currTensor {
+fn get_computation_graph(curr_tensor: &Tensor, graph: &mut Vec<TensorOperation>) {
+    match curr_tensor {
         Tensor::F32 {
             id,
             data,
             shape,
             graph: curr_graph,
-        } => {
-            match curr_graph {
-                TensorOperation::None => {
-                    return;
-                }
-                _ => {
-                    // Add the current operation to the graph first
-                    graph.push(curr_graph.clone());
+            grad: None,
+        } => match curr_graph {
+            TensorOperation::None => {
+                return;
+            }
+            _ => {
+                graph.push(curr_graph.clone());
 
-                    // Use a queue for BFS traversal
-                    let mut queue = Vec::new();
+                let mut queue = Vec::new();
 
-                    // Add immediate dependencies to the queue
-                    match curr_graph {
-                        TensorOperation::Add { left, right }
-                        | TensorOperation::Mul { left, right }
-                        | TensorOperation::Sub { left, right }
-                        | TensorOperation::Div { left, right } => {
-                            queue.push(left.clone());
-                            if let OperatorHandle::Tensor(right_handle) = right {
-                                queue.push(right_handle.clone());
-                            }
+                match curr_graph {
+                    TensorOperation::Add { left, right }
+                    | TensorOperation::Mul { left, right }
+                    | TensorOperation::Sub { left, right }
+                    | TensorOperation::Div { left, right } => {
+                        queue.push(left.clone());
+                        if let OperatorHandle::Tensor(right_handle) = right {
+                            queue.push(right_handle.clone());
                         }
-                        TensorOperation::Sum { input } => {
-                            queue.push(input.clone());
-                        }
-                        TensorOperation::Concat { inputs, dim: _ } => {
-                            for input_handle in inputs {
-                                queue.push(input_handle.clone());
-                            }
-                        }
-                        TensorOperation::None => {} // Already handled in outer match
                     }
+                    TensorOperation::Sum { input } => {
+                        queue.push(input.clone());
+                    }
+                    TensorOperation::Concat { inputs, dim: _ } => {
+                        for input_handle in inputs {
+                            queue.push(input_handle.clone());
+                        }
+                    }
+                    TensorOperation::None => {}
+                }
 
-                    // Process all tensors in the queue (BFS style)
-                    let mut i = 0;
-                    while i < queue.len() {
-                        if let Some(tensor) = get_tensor(queue[i].clone()) {
-                            if let Tensor::F32 { graph: op, .. } = &tensor {
-                                match op {
-                                    TensorOperation::None => {}
-                                    _ => {
-                                        // Add this operation to the graph
-                                        graph.push(op.clone());
+                let mut i = 0;
+                while i < queue.len() {
+                    if let Some(tensor) = get_tensor(queue[i].clone()) {
+                        if let Tensor::F32 { graph: op, .. } = &tensor {
+                            match op {
+                                TensorOperation::None => {}
+                                _ => {
+                                    graph.push(op.clone());
 
-                                        // Add its dependencies to the queue
-                                        match op {
-                                            TensorOperation::Add { left, right }
-                                            | TensorOperation::Mul { left, right }
-                                            | TensorOperation::Sub { left, right }
-                                            | TensorOperation::Div { left, right } => {
-                                                queue.push(left.clone());
-                                                if let OperatorHandle::Tensor(right_handle) = right
-                                                {
-                                                    queue.push(right_handle.clone());
-                                                }
+                                    match op {
+                                        TensorOperation::Add { left, right }
+                                        | TensorOperation::Mul { left, right }
+                                        | TensorOperation::Sub { left, right }
+                                        | TensorOperation::Div { left, right } => {
+                                            queue.push(left.clone());
+                                            if let OperatorHandle::Tensor(right_handle) = right {
+                                                queue.push(right_handle.clone());
                                             }
-                                            TensorOperation::Sum { input } => {
-                                                queue.push(input.clone());
-                                            }
-                                            TensorOperation::Concat { inputs, dim: _ } => {
-                                                for input_handle in inputs {
-                                                    queue.push(input_handle.clone());
-                                                }
-                                            }
-                                            TensorOperation::None => {}
                                         }
+                                        TensorOperation::Sum { input } => {
+                                            queue.push(input.clone());
+                                        }
+                                        TensorOperation::Concat { inputs, dim: _ } => {
+                                            for input_handle in inputs {
+                                                queue.push(input_handle.clone());
+                                            }
+                                        }
+                                        TensorOperation::None => {}
                                     }
                                 }
                             }
                         }
-                        i += 1;
                     }
+                    i += 1;
                 }
             }
-        }
+        },
         Tensor::F64 { data, shape } => {
             todo!()
         }
+        _ => todo!(),
     }
 }
+
 fn print_computation_graph(tensor: &Tensor) {
     let mut graph = Vec::new();
     get_computation_graph(tensor, &mut graph);
@@ -870,15 +938,16 @@ fn format_operation(op: &TensorOperation) -> String {
 }
 
 fn main() {
-
-
+    tests();
     let t1 = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
     let t2 = Tensor::with_shape_f32(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
-    let t3 = t1 + t2;  
-    let t4: Tensor = t3 * 2.0;  
-    let t5 = t4.sum();   
-    println!("\nComplex computation graph:");
-    print_computation_graph(&t5);
-    
-    tests();
+    let t3 = t1 + t2;
+    let t4: Tensor = t3 * 2.0;
+    let t5 = t4.sum();
+
+    t5.backward();
+
+    // println!("\nComplex computation graph:");
+    // print_computation_graph(&t5);
+    // println!("tensor 4 {:?}", t4);
 }
