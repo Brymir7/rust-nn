@@ -356,15 +356,11 @@ impl Tensor {
     fn from_vec_f32(data: Vec<f32>) -> Self {
         Self::new_f32(data, None)
     }
+
     fn backward(&self) {
         let mut queue: VecDeque<(TensorOperation, TensorData)> = VecDeque::new(); // op and grad on result // prev grad
         match self {
-            Tensor::F32 {
-                id,
-                data,
-                graph,
-                grad,
-            } => {
+            Tensor::F32 { graph, .. } => {
                 queue.push_back((graph.clone(), TensorData::from_vec_f32(vec![1.0])));
                 // loss has 1.0 grad
             }
@@ -375,18 +371,89 @@ impl Tensor {
             match tensor_h {
                 TensorOperation::Add { left, right } => {
                     with_mut_tensor(left.clone(), |tensor| match tensor {
-                        Tensor::F32 { data, grad, .. } => {
-                            // let grad_data = vec![1.0; data.data_f32().len()];
-                            // *grad = Some(grad_data);
+                        Tensor::F32 { grad, .. } => {
+                            let mut new_grad: TensorData = prev_grad.clone() * 1.0;
+                            match grad {
+                                Some(ref existing_grad) => {
+                                    new_grad = new_grad + existing_grad.clone();
+                                }
+                                None => {}
+                            }
+                            *grad = Some(new_grad.clone());
+                            queue.push_back((tensor.graph(), new_grad));
                         }
                         _ => todo!(),
                     });
+                    match right {
+                        OperatorHandle::Tensor(right) => {
+                            with_mut_tensor(right, |tensor| match tensor {
+                                Tensor::F32 { grad, .. } => {
+                                    let mut new_grad: TensorData = prev_grad * 1.0;
+                                    match grad {
+                                        Some(ref existing_grad) => {
+                                            new_grad = new_grad + existing_grad.clone();
+                                        }
+                                        None => {}
+                                    }
+                                    *grad = Some(new_grad.clone());
+                                    queue.push_back((tensor.graph(), new_grad));
+                                }
+                                _ => todo!(),
+                            });
+                        }
+                        OperatorHandle::Scalar => {}
+                    }
+                }
+                TensorOperation::Sub { left, right } => {
+                    // For subtraction: gradient flows to left unchanged, but negated to right
+                    with_mut_tensor(left.clone(), |tensor| match tensor {
+                        Tensor::F32 { grad, .. } => {
+                            let mut new_grad: TensorData = prev_grad.clone() * 1.0;
+                            match grad {
+                                Some(ref existing_grad) => {
+                                    new_grad = new_grad + existing_grad.clone();
+                                }
+                                None => {}
+                            }
+                            *grad = Some(new_grad.clone());
+                            queue.push_back((tensor.graph(), new_grad));
+                        }
+                        _ => todo!(),
+                    });
+                    match right {
+                        OperatorHandle::Tensor(right) => {
+                            with_mut_tensor(right, |tensor| match tensor {
+                                Tensor::F32 { grad, .. } => {
+                                    // Note the negative gradient for right operand of subtraction
+                                    let mut new_grad = prev_grad * -1.0;
+                                    match grad {
+                                        Some(ref existing_grad) => {
+                                            new_grad = new_grad + existing_grad.clone();
+                                        }
+                                        None => {}
+                                    }
+                                    *grad = Some(new_grad);
+                                }
+                                _ => todo!(),
+                            });
+                        }
+                        OperatorHandle::Scalar => {}
+                    }
                 }
                 TensorOperation::Sum { input } => {
                     with_mut_tensor(input.clone(), |tensor| match tensor {
-                        Tensor::F32 { data, grad, .. } => {
-                            // let grad_data = vec![1.0; data.len()];
-                            // *grad = Some(grad_data);
+                        Tensor::F32 { grad, .. } => {
+                            let mut new_grad: TensorData = prev_grad.clone() * 1.0;
+                            match grad {
+                                Some(grad) => {
+                                    new_grad = new_grad + grad.clone();
+                                }
+                                None => {
+                                    new_grad = new_grad;
+                                }
+                            }
+                            *grad = Some(new_grad.clone());
+                            queue.push_back((tensor.graph(), new_grad));
                         }
                         _ => todo!(),
                     });
@@ -394,32 +461,47 @@ impl Tensor {
                 TensorOperation::Mul { left, right } => {
                     todo!()
                 }
-                TensorOperation::Sub { left, right } => {
-                    with_mut_tensor(left.clone(), |tensor| match tensor {
-                        Tensor::F32 { data, grad, .. } => {
-                            let grad_data = vec![1.0; data.data_f32().len()];
-                            // *grad = Some(grad_data);
-                        }
-                        _ => todo!(),
-                    });
-                }
+
                 TensorOperation::Abs { input } => {
                     with_mut_tensor(input.clone(), |tensor| match tensor {
-                        Tensor::F32 { data, grad, .. } => {
-                            // let grad_data = data
-                            //     .iter()
-                            //     .map(|x| if x > &0.0 { 1.0 } else { -1.0 })
-                            //     .collect();
-                            // *grad = Some(grad_data);
+                        Tensor::F32 { grad, .. } => {
+                            let mut new_grad: TensorData = prev_grad.clone() * 1.0;
+                            match grad {
+                                Some(grad) => {
+                                    new_grad = new_grad + grad.clone();
+                                }
+                                None => {
+                                    new_grad = new_grad;
+                                }
+                            }
+                            *grad = Some(new_grad.clone());
+                            queue.push_back((tensor.graph(), new_grad));
                         }
                         _ => todo!(),
                     });
                 }
+                TensorOperation::None => {}
+
                 _ => {
                     println!("Operation not implemented {:?}", tensor_h);
                     todo!()
                 }
             }
+        }
+    }
+    fn grad_f32(&self) -> f32 {
+        match self {
+            Tensor::F32 { grad, .. } => match grad {
+                Some(grad) => grad.data_f32()[0],
+                None => 0.0,
+            },
+            _ => todo!(),
+        }
+    }
+    fn graph(&self) -> TensorOperation {
+        match self {
+            Tensor::F32 { graph, .. } => graph.clone(),
+            _ => todo!(),
         }
     }
     fn abs(&self) -> Tensor {
@@ -1283,18 +1365,19 @@ fn format_operation(op: &TensorOperation) -> String {
 }
 
 fn main() {
-    tests();
-    let t1 = Tensor::with_shape_f32(vec![1.7], vec![1]);
+    // tests();
+    let t1 = Tensor::with_shape_f32(vec![3.0], vec![1]);
     let t2 = Tensor::with_shape_f32(vec![1.5], vec![1]);
-    let res = t1 + t2;
+    let res = t1 - t2;
     let wanted: f32 = 3.0;
     let loss = (wanted - res).abs();
     print_tensor_data(&loss);
-    // loss.backward();
-    let a = TensorData::from_vec_f32(vec![1.0, 2.0, 3.0]);
-    let b = TensorData::from_vec_f32(vec![4.0, 5.0, 6.0]);
-    let c = a + b;
-    println!("{:?}", c);
+    loss.backward();
+    TENSOR_CONTEXT.with_borrow(|ctx| {
+        for t in ctx.all_tensors.iter() {
+            println!("tensor {:?}", t.grad_f32());
+        }
+    });
     print_computation_graph(&loss);
     // println!("tensor 4 {:?}", t4);
 }
