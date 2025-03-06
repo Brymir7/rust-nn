@@ -48,7 +48,7 @@ impl BinaryOp<f64> for MulOp {
         1.0
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy)]
 struct TensorHandle(usize);
 struct TensorContext {
     all_tensors: Vec<Tensor>,
@@ -172,7 +172,12 @@ impl TensorData {
             _ => panic!("Not an f32 tensor"),
         }
     }
-
+    fn mut_data_f32(&mut self) -> &mut Vec<f32> {
+        match self {
+            TensorData::F32 { data, .. } => data,
+            _ => panic!("Not an f32 tensor"),
+        }
+    }
     fn data_f64(&self) -> &Vec<f64> {
         match self {
             TensorData::F64 { data, .. } => data,
@@ -276,7 +281,7 @@ fn format_tensor<T: Debug>(
     write!(f, "\n{}]", indent)
 }
 impl Tensor {
-    fn new_f32(data: Vec<f32>, shape: Option<Vec<usize>>) -> Self {
+    fn new_f32(data: Vec<f32>, shape: Option<Vec<usize>>) -> TensorHandle {
         // Validate shape and create proper shape vec
         let shape = match shape {
             Some(shape) => {
@@ -303,10 +308,9 @@ impl Tensor {
             graph: TensorOperation::None,
             grad: None,
         };
-        let id = register_tensor(tensor);
-        return get_tensor(id).unwrap();
+        register_tensor(tensor)
     }
-    fn new_f64(data: Vec<f64>, shape: Option<Vec<usize>>) -> Self {
+    fn new_f64(data: Vec<f64>, shape: Option<Vec<usize>>) -> TensorHandle {
         let shape = match shape {
             Some(shape) => {
                 let expected_size = shape.iter().product::<usize>();
@@ -331,11 +335,10 @@ impl Tensor {
             graph: TensorOperation::None,
             grad: None,
         };
-        let id = register_tensor(tensor);
-        return get_tensor(id).unwrap();
+        register_tensor(tensor)
     }
 
-    fn from_op(data: Vec<f32>, shape: Vec<usize>, op: TensorOperation) -> Self {
+    fn from_op(data: Vec<f32>, shape: Vec<usize>, op: TensorOperation) -> TensorHandle {
         let tensor_data = TensorData::F32 { data, shape };
         let tensor = Tensor::F32 {
             id: TensorHandle(get_next_tensor_id()),
@@ -343,17 +346,16 @@ impl Tensor {
             graph: op,
             grad: None,
         };
-        let id = register_tensor(tensor);
-        return get_tensor(id).unwrap();
+        register_tensor(tensor)
     }
 
-    fn with_shape_f32(data: Vec<f32>, shape: Vec<usize>) -> Self {
+    fn with_shape_f32(data: Vec<f32>, shape: Vec<usize>) -> TensorHandle {
         Self::new_f32(data, Some(shape))
     }
-    fn with_shape_f64(data: Vec<f64>, shape: Vec<usize>) -> Self {
+    fn with_shape_f64(data: Vec<f64>, shape: Vec<usize>) -> TensorHandle {
         Self::new_f64(data, Some(shape))
     }
-    fn from_vec_f32(data: Vec<f32>) -> Self {
+    fn from_vec_f32(data: Vec<f32>) -> TensorHandle {
         Self::new_f32(data, None)
     }
 
@@ -504,7 +506,7 @@ impl Tensor {
             _ => todo!(),
         }
     }
-    fn abs(&self) -> Tensor {
+    fn abs(&self) -> TensorHandle {
         match self {
             Tensor::F32 {
                 id,
@@ -523,7 +525,7 @@ impl Tensor {
         }
     }
     // todo should be along axis
-    fn sum(&self) -> Tensor {
+    fn sum(&self) -> TensorHandle {
         match self {
             Tensor::F32 { id, data, .. } => {
                 let sum = data.data_f32().iter().sum();
@@ -538,7 +540,7 @@ impl Tensor {
         }
     }
 
-    fn concat(&self, other: &Tensor, dim: Option<usize>) -> Tensor {
+    fn concat(&self, other: &Tensor, dim: Option<usize>) -> TensorHandle {
         match &self {
             Tensor::F32 { id, data, .. } => match &other {
                 Tensor::F32 {
@@ -819,9 +821,9 @@ macro_rules! impl_tensordata_op {
 macro_rules! impl_tensor_op {
     ($trait:ident, $method:ident, $op:tt, $op_name:expr, $op_enum:ident) => {
         impl $trait for &Tensor {
-            type Output = Tensor;
+            type Output = TensorHandle;
 
-            fn $method(self, other: &Tensor) -> Tensor {
+            fn $method(self, other: &Tensor) -> TensorHandle {
                 match (self, other) {
                     (
                         Tensor::F32 {
@@ -871,18 +873,18 @@ macro_rules! impl_tensor_op {
         }
 
         impl $trait for Tensor {
-            type Output = Tensor;
+            type Output = TensorHandle;
 
-            fn $method(self, other: Tensor) -> Tensor {
+            fn $method(self, other: Tensor) -> TensorHandle {
                 &self $op &other
             }
         }
 
         // Implementation for tensor op scalar
         impl $trait<f32> for &Tensor {
-            type Output = Tensor;
+            type Output = TensorHandle;
 
-            fn $method(self, scalar: f32) -> Tensor {
+            fn $method(self, scalar: f32) -> TensorHandle {
                 match self {
                     Tensor::F32 { id, data, .. } => {
                         // Use the TensorData operation
@@ -905,9 +907,9 @@ macro_rules! impl_tensor_op {
         }
 
         impl $trait<f64> for &Tensor {
-            type Output = Tensor;
+            type Output = TensorHandle;
 
-            fn $method(self, scalar: f64) -> Tensor {
+            fn $method(self, scalar: f64) -> TensorHandle {
                 match self {
                     Tensor::F32 { id, data, .. } => {
                         // Use the TensorData operation
@@ -930,26 +932,26 @@ macro_rules! impl_tensor_op {
         }
 
         impl $trait<f32> for Tensor {
-            type Output = Tensor;
+            type Output = TensorHandle;
 
-            fn $method(self, scalar: f32) -> Tensor {
+            fn $method(self, scalar: f32) -> TensorHandle {
                 &self $op scalar
             }
         }
 
         impl $trait<f64> for Tensor {
-            type Output = Tensor;
+            type Output = TensorHandle;
 
-            fn $method(self, scalar: f64) -> Tensor {
+            fn $method(self, scalar: f64) -> TensorHandle {
                 &self $op scalar
             }
         }
 
         // For the reverse operation (scalar op Tensor)
         impl $trait<&Tensor> for f32 {
-            type Output = Tensor;
+            type Output = TensorHandle;
 
-            fn $method(self, tensor: &Tensor) -> Tensor {
+            fn $method(self, tensor: &Tensor) -> TensorHandle {
                 match tensor {
                     Tensor::F32 { id, data, .. } => {
                         // Use the TensorData operation
@@ -972,9 +974,9 @@ macro_rules! impl_tensor_op {
         }
 
         impl $trait<&Tensor> for f64 {
-            type Output = Tensor;
+            type Output = TensorHandle;
 
-            fn $method(self, tensor: &Tensor) -> Tensor {
+            fn $method(self, tensor: &Tensor) -> TensorHandle {
                 match tensor {
                     Tensor::F32 { id, data, .. } => {
                         // Use the TensorData operation
@@ -997,206 +999,159 @@ macro_rules! impl_tensor_op {
         }
 
         impl $trait<Tensor> for f32 {
-            type Output = Tensor;
+            type Output = TensorHandle;
 
-            fn $method(self, tensor: Tensor) -> Tensor {
+            fn $method(self, tensor: Tensor) -> TensorHandle {
                 self $op &tensor
             }
         }
 
         impl $trait<Tensor> for f64 {
-            type Output = Tensor;
+            type Output = TensorHandle;
 
-            fn $method(self, tensor: Tensor) -> Tensor {
+            fn $method(self, tensor: Tensor) -> TensorHandle {
                 self $op &tensor
             }
         }
     };
 }
+macro_rules! impl_tensorhandle_op {
+    ($trait:ident, $method:ident, $op:tt, $op_name:expr, $op_enum:ident) => {
+        impl $trait for &TensorHandle {
+            type Output = TensorHandle;
 
+            fn $method(self, other: &TensorHandle) -> TensorHandle {
+                // Get tensors from context
+                let tensor1 = get_tensor(self.clone()).unwrap();
+                let tensor2 = get_tensor(other.clone()).unwrap();
+
+                let new_tensor = tensor1 $op tensor2;
+                new_tensor
+            }
+        }
+
+        impl $trait for TensorHandle {
+            type Output = TensorHandle;
+
+            fn $method(self, other: TensorHandle) -> TensorHandle {
+                &self $op &other
+            }
+        }
+
+        // Implementation for TensorHandle op scalar
+        impl $trait<f32> for &TensorHandle {
+            type Output = TensorHandle;
+
+            fn $method(self, scalar: f32) -> TensorHandle {
+                let tensor = get_tensor(self.clone()).unwrap();
+                let new_tensor = tensor $op scalar;
+                new_tensor
+
+            }
+        }
+
+        impl $trait<f64> for &TensorHandle {
+            type Output = TensorHandle;
+
+            fn $method(self, scalar: f64) -> TensorHandle {
+                let tensor = get_tensor(self.clone()).unwrap();
+                let new_tensor = tensor $op scalar;
+                new_tensor
+            }
+        }
+
+        impl $trait<f32> for TensorHandle {
+            type Output = TensorHandle;
+
+            fn $method(self, scalar: f32) -> TensorHandle {
+                &self $op scalar
+            }
+        }
+
+        impl $trait<f64> for TensorHandle {
+            type Output = TensorHandle;
+
+            fn $method(self, scalar: f64) -> TensorHandle {
+                &self $op scalar
+            }
+        }
+
+        // For the reverse operation (scalar op TensorHandle)
+        impl $trait<&TensorHandle> for f32 {
+            type Output = TensorHandle;
+
+            fn $method(self, handle: &TensorHandle) -> TensorHandle {
+                let tensor = get_tensor(handle.clone()).unwrap();
+                let new_tensor = self $op &tensor;
+                new_tensor
+            }
+        }
+
+        impl $trait<&TensorHandle> for f64 {
+            type Output = TensorHandle;
+
+            fn $method(self, handle: &TensorHandle) -> TensorHandle {
+                let tensor = get_tensor(handle.clone()).unwrap();
+                let new_tensor = self $op &tensor;
+                new_tensor
+
+            }
+        }
+
+        impl $trait<TensorHandle> for f32 {
+            type Output = TensorHandle;
+
+            fn $method(self, handle: TensorHandle) -> TensorHandle {
+                self $op &handle
+            }
+        }
+
+        impl $trait<TensorHandle> for f64 {
+            type Output = TensorHandle;
+
+            fn $method(self, handle: TensorHandle) -> TensorHandle {
+                self $op &handle
+            }
+        }
+    };
+}
+impl TensorHandle {
+    fn concat(&self, other: &TensorHandle, dim: Option<usize>) -> TensorHandle {
+        let tensor1 = get_tensor(self.clone()).unwrap();
+        let tensor2 = get_tensor(other.clone()).unwrap();
+        tensor1.concat(&tensor2, dim)
+    }
+    fn sum(&self) -> TensorHandle {
+        let tensor = get_tensor(self.clone()).unwrap();
+        tensor.sum()
+    }
+    fn abs(&self) -> TensorHandle {
+        let tensor = get_tensor(self.clone()).unwrap();
+        tensor.abs()
+    }
+    fn backward(&self) {
+        let tensor = get_tensor(self.clone()).unwrap();
+        tensor.backward()
+    }
+}
 // Implement operations for TensorData
 impl_tensordata_op!(Add, add, +, "add");
 impl_tensordata_op!(Sub, sub, -, "subtract");
 impl_tensordata_op!(Mul, mul, *, "multiply");
 impl_tensordata_op!(Div, div, /, "divide");
 
-// Implement operations for Tensor (now using TensorData operations internally)
+// Implement operations for TensorHandle which operates (now using TensorData operations internally)
 impl_tensor_op!(Add, add, +, "add", Add);
 impl_tensor_op!(Sub, sub, -, "subtract", Sub);
 impl_tensor_op!(Mul, mul, *, "multiply", Mul);
 impl_tensor_op!(Div, div, /, "divide", Div);
 
-fn tests() {
-    {
-        let t1 = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
-        let t2 = Tensor::with_shape_f32(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
-        let result = t1.concat(&t2, None);
+impl_tensorhandle_op!(Add, add, +, "add", Add);
+impl_tensorhandle_op!(Sub, sub, -, "subtract", Sub);
+impl_tensorhandle_op!(Mul, mul, *, "multiply", Mul);
+impl_tensorhandle_op!(Div, div, /, "divide", Div);
 
-        match result {
-            Tensor::F32 {
-                id,
-                data,
-
-                graph,
-                grad: None,
-            } => {
-                assert_eq!(
-                    *data.shape(),
-                    vec![4, 2],
-                    "Shape should be [4, 2] when concatenating along default dimension"
-                );
-                assert_eq!(
-                    *data.data_f32(),
-                    vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
-                    "Data should be concatenated correctly"
-                );
-            }
-            _ => panic!("Expected F32 tensor result"),
-        }
-    }
-
-    {
-        let t1: Tensor = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
-        let t2 = Tensor::with_shape_f32(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
-        let result = t1.concat(&t2, Some(0));
-
-        match result {
-            Tensor::F32 {
-                id,
-                data,
-
-                graph,
-                grad: None,
-            } => {
-                assert_eq!(
-                    *data.shape(),
-                    vec![4, 2],
-                    "Shape should be [4, 2] when concatenating along dim 0"
-                );
-                assert_eq!(
-                    *data.data_f32(),
-                    vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
-                    "Data should be concatenated correctly"
-                );
-            }
-            _ => panic!("Expected F32 tensor result"),
-        }
-    }
-
-    {
-        let t1 = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
-        let t2 = Tensor::with_shape_f32(vec![5.0, 6.0, 7.0, 8.0], vec![2, 2]);
-        let result = t1.concat(&t2, Some(1));
-
-        match result {
-            Tensor::F32 {
-                id,
-                data,
-
-                graph,
-                grad: None,
-            } => {
-                assert_eq!(
-                    *data.shape(),
-                    vec![2, 4],
-                    "Shape should be [2, 4] when concatenating along dim 1"
-                );
-                assert_eq!(
-                    *data.data_f32(),
-                    vec![1.0, 2.0, 5.0, 6.0, 3.0, 4.0, 7.0, 8.0],
-                    "Data should be interleaved correctly when concatenating along dim 1"
-                );
-            }
-            _ => panic!("Expected F32 tensor result"),
-        }
-    }
-
-    {
-        let t1 =
-            Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], vec![2, 2, 2]);
-        let t2 = Tensor::with_shape_f32(
-            vec![9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0],
-            vec![2, 2, 2],
-        );
-
-        let result0 = t1.concat(&t2, Some(0));
-        match result0 {
-            Tensor::F32 {
-                id,
-                data: data0,
-
-                graph: graph0,
-                grad: None,
-            } => {
-                assert_eq!(
-                    *data0.shape(),
-                    vec![4, 2, 2],
-                    "Shape should be [4, 2, 2] when concatenating along dim 0"
-                );
-                assert_eq!(
-                    *data0.data_f32(),
-                    vec![
-                        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
-                        15.0, 16.0
-                    ],
-                    "Data should be concatenated correctly along dim 0"
-                );
-            }
-            _ => panic!("Expected F32 tensor result"),
-        }
-
-        let result1 = t1.concat(&t2, Some(1));
-        match result1 {
-            Tensor::F32 {
-                id,
-                data: data1,
-
-                graph: graph1,
-                grad: None,
-            } => {
-                assert_eq!(
-                    *data1.shape(),
-                    vec![2, 4, 2],
-                    "Shape should be [2, 4, 2] when concatenating along dim 1"
-                );
-                assert_eq!(
-                    *data1.data_f32(),
-                    vec![
-                        1.0, 2.0, 3.0, 4.0, 9.0, 10.0, 11.0, 12.0, 5.0, 6.0, 7.0, 8.0, 13.0, 14.0,
-                        15.0, 16.0
-                    ],
-                    "Data should be interleaved correctly when concatenating along dim 1"
-                );
-            }
-            _ => panic!("Expected F32 tensor result"),
-        }
-
-        let result2 = t1.concat(&t2, Some(2));
-        match result2 {
-            Tensor::F32 {
-                id,
-                data: data2,
-                graph: graph1,
-                grad: None,
-            } => {
-                assert_eq!(
-                    *data2.shape(),
-                    vec![2, 2, 4],
-                    "Shape should be [2, 2, 4] when concatenating along dim 2"
-                );
-                assert_eq!(
-                    *data2.data_f32(),
-                    vec![
-                        1.0, 2.0, 9.0, 10.0, 3.0, 4.0, 11.0, 12.0, 5.0, 6.0, 13.0, 14.0, 7.0, 8.0,
-                        15.0, 16.0
-                    ],
-                    "Data should be interleaved correctly when concatenating along dim 2"
-                );
-            }
-            _ => panic!("Expected F32 tensor result"),
-        }
-    }
-}
+//
 fn get_computation_graph(curr_tensor: &Tensor, graph: &mut Vec<TensorOperation>) {
     match curr_tensor {
         Tensor::F32 {
@@ -1368,16 +1323,32 @@ fn main() {
     // tests();
     let t1 = Tensor::with_shape_f32(vec![3.0], vec![1]);
     let t2 = Tensor::with_shape_f32(vec![1.5], vec![1]);
-    let res = t1 - t2;
     let wanted: f32 = 3.0;
-    let loss = (wanted - res).abs();
-    print_tensor_data(&loss);
-    loss.backward();
-    TENSOR_CONTEXT.with_borrow(|ctx| {
-        for t in ctx.all_tensors.iter() {
-            println!("tensor {:?}", t.grad_f32());
-        }
-    });
-    print_computation_graph(&loss);
+    const LEARNING_RATE: f32 = 0.1;
+    for _ in 0..10 {
+        let res = t1 - t2;
+        print_tensor_data(&get_tensor(res).unwrap());
+        let loss = (wanted - res).abs();
+        print_tensor_data(&get_tensor(loss).unwrap());
+        loss.backward();
+        TENSOR_CONTEXT.with_borrow_mut(|ctx| {
+            for t in ctx.all_tensors.iter_mut() {
+                match t {
+                    Tensor::F32 { data, grad, .. } => match grad {
+                        Some(grad) => {
+                            let grad_data = grad.data_f32();
+                            let data = data.mut_data_f32();
+                            for i in 0..data.len() {
+                                data[i] -= grad_data[i] * LEARNING_RATE;
+                            }
+                        }
+                        None => {}
+                    },
+                    _ => todo!(),
+                }
+            }
+        });
+    }
+    // print_computation_graph(&loss);
     // println!("tensor 4 {:?}", t4);
 }
