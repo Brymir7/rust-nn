@@ -1325,6 +1325,7 @@ fn main() {
     let t2 = Tensor::with_shape_f32(vec![1.5], vec![1]);
     let wanted: f32 = 3.0;
     const LEARNING_RATE: f32 = 0.1;
+    const ZERO_GRAD: bool = true;
     for _ in 0..10 {
         let res = t1 - t2;
         print_tensor_data(&get_tensor(res).unwrap());
@@ -1345,6 +1346,14 @@ fn main() {
                         None => {}
                     },
                     _ => todo!(),
+                }
+                if ZERO_GRAD {
+                    match t {
+                        Tensor::F32 { grad, .. } => {
+                            *grad = None;
+                        }
+                        _ => todo!(),
+                    }
                 }
             }
         });
