@@ -367,7 +367,10 @@ impl Tensor {
         let mut queue: VecDeque<(TensorOperation, TensorData)> = VecDeque::new(); // op and grad on result // prev grad
         match self {
             Tensor::F32 { graph, .. } => {
-                queue.push_back((graph.clone(), TensorData::from_vec_f32(vec![1.0])));
+                queue.push_back((
+                    graph.clone(),
+                    TensorData::from_vec_f32(vec![1.0 * self.data_f32()[0]]),
+                ));
                 // loss has 1.0 grad
             }
             _ => todo!(),
@@ -1507,9 +1510,9 @@ fn main() {
     let b1 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
     let b2 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
     let wanted: f32 = 4.0;
-    for _ in 0..2 {
+    for _ in 0..89 {
         println!("SHOWING ALL GRADIENTS FOR INITIALIZATION");
-        let res = t1 + b1 + t2 + b2;
+        let res = t1 * w1 + b1 + t2 * w2 + b2;
         let loss = (wanted - res).abs();
 
         TENSOR_CONTEXT.with_borrow_mut(|ctx| {
@@ -1542,7 +1545,7 @@ fn main() {
                                 debug_assert!(
                                     grad_data.len() == data.len() && grad_data.len() == 1
                                 );
-                                data[0] -= 0.01 * grad_data[0];
+                                data[0] -= 0.1 * grad_data[0];
                                 println!("new data for {:?}: {:?}", id, data);
                             }
                         }
@@ -1553,7 +1556,7 @@ fn main() {
         })
     }
 
-    let res = (t1 + b1) - (t2 + b2);
+    let res = (t1 + b1) + (t2 + b2);
     print_computation_graph(&get_tensor(res).unwrap());
     println!("Result: {:?}", get_tensor(res).unwrap().data_f32());
     // let params = vec![w1, w2, b1, b2];
