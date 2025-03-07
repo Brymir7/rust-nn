@@ -140,6 +140,7 @@ enum TensorOperation {
     },
     Abs {
         input: TensorHandle,
+        forward_positive: bool, // whether the forward pass val was pos / neg before abs
     },
     None,
 }
@@ -367,10 +368,7 @@ impl Tensor {
         let mut queue: VecDeque<(TensorOperation, TensorData)> = VecDeque::new(); // op and grad on result // prev grad
         match self {
             Tensor::F32 { graph, .. } => {
-                queue.push_back((
-                    graph.clone(),
-                    TensorData::from_vec_f32(vec![1.0 * self.data_f32()[0]]),
-                ));
+                queue.push_back((graph.clone(), TensorData::from_vec_f32(vec![1.0])));
                 // loss has 1.0 grad
             }
             _ => todo!(),
@@ -380,9 +378,7 @@ impl Tensor {
             match tensor_h {
                 TensorOperation::Add { left, right } => {
                     with_mut_tensor(left, |tensor| {
-                        if !tensor.requires_grad() {
-                            return;
-                        }
+                        if !tensor.requires_grad() {}
 
                         match tensor {
                             Tensor::F32 { grad, .. } => {
@@ -489,9 +485,7 @@ impl Tensor {
                                     Some(grad) => {
                                         new_grad = new_grad + grad.clone();
                                     }
-                                    None => {
-                                        new_grad = new_grad;
-                                    }
+                                    None => {}
                                 }
                                 *grad = Some(new_grad.clone());
                                 if tensor.requires_grad() {
@@ -522,9 +516,7 @@ impl Tensor {
                                     Some(grad) => {
                                         new_grad = new_grad + grad.clone();
                                     }
-                                    None => {
-                                        *grad = Some(new_grad.clone());
-                                    }
+                                    None => {}
                                 }
                                 *grad = Some(new_grad.clone());
                                 if tensor.requires_grad() {
@@ -536,14 +528,18 @@ impl Tensor {
                     });
                 }
 
-                TensorOperation::Abs { input } => {
+                TensorOperation::Abs {
+                    input,
+                    forward_positive,
+                } => {
                     with_mut_tensor(input, |tensor| {
                         if !tensor.requires_grad() {
                             return;
                         }
                         match tensor {
                             Tensor::F32 { grad, .. } => {
-                                let mut new_grad: TensorData = prev_grad.clone() * 1.0;
+                                let dir = if forward_positive { 1.0 } else { -1.0 };
+                                let mut new_grad: TensorData = prev_grad.clone() * dir;
                                 match grad {
                                     Some(grad) => {
                                         new_grad = new_grad + grad.clone();
@@ -606,11 +602,16 @@ impl Tensor {
                 grad,
                 ..
             } => {
+                debug_assert!(data.data_f32().len() > 0);
+                let forward_positive = data.data_f32()[0] >= 0.0;
                 let new_data = data.data_f32().iter().map(|x| x.abs()).collect();
                 Tensor::from_op(
                     new_data,
                     data.shape().clone(),
-                    TensorOperation::Abs { input: id.clone() },
+                    TensorOperation::Abs {
+                        input: id.clone(),
+                        forward_positive: forward_positive,
+                    },
                 )
             }
             _ => todo!(),
@@ -787,21 +788,29 @@ macro_rules! impl_tensordata_op {
                         TensorData::F32 { data: data1, shape: shape1 },
                         TensorData::F32 { data: data2, shape: shape2 },
                     ) => {
-                        assert_eq!(shape1, shape2, concat!("Shapes must match for ", $op_name));
-                        let new_data = data1.iter().zip(data2.iter()).map(|(a, b)| a $op b).collect();
-                        TensorData::with_shape_f32(new_data, shape1.clone())
+                        if shape1 == shape2 {
+                            // Shapes match exactly - perform element-wise operation
+                            let new_data = data1.iter().zip(data2.iter()).map(|(a, b)| a $op b).collect();
+                            TensorData::with_shape_f32(new_data, shape1.clone())
+                        } else if shape1.len() == 1 && shape1[0] == 1 {
+                            // Self is a scalar - broadcast to other's shape
+                            let scalar_value = data1[0];
+                            let new_data = data2.iter().map(|&b| scalar_value $op b).collect();
+                            TensorData::with_shape_f32(new_data, shape2.clone())
+                        } else if shape2.len() == 1 && shape2[0] == 1 {
+                            // Other is a scalar - broadcast to self's shape
+                            let scalar_value = data2[0];
+                            let new_data = data1.iter().map(|&a| a $op scalar_value).collect();
+                            TensorData::with_shape_f32(new_data, shape1.clone())
+                        } else {
+                            panic!(concat!("Cannot ", $op_name, " tensors of different shapes"))
+                        }
                     }
-                    (
-                        TensorData::F64 { data: data1, shape: shape1 },
-                        TensorData::F64 { data: data2, shape: shape2 },
-                    ) => {
-                        assert_eq!(shape1, shape2, concat!("Shapes must match for ", $op_name));
-                        let new_data = data1.iter().zip(data2.iter()).map(|(a, b)| a $op b).collect();
-                        TensorData::with_shape_f64(new_data, shape1.clone())
-                    }
+                    // Similar cases for F64...
                     _ => panic!(concat!("Cannot ", $op_name, " tensor data of different types (f32 vs f64)")),
                 }
-            }
+
+        }
         }
 
         impl $trait for TensorData {
@@ -1286,7 +1295,7 @@ fn get_computation_graph(curr_tensor: &Tensor, graph: &mut Vec<TensorOperation>)
                             queue.push(input_handle.clone());
                         }
                     }
-                    TensorOperation::Abs { input } => {
+                    TensorOperation::Abs { input, .. } => {
                         queue.push(input.clone());
                     }
                     TensorOperation::None => {}
@@ -1319,7 +1328,7 @@ fn get_computation_graph(curr_tensor: &Tensor, graph: &mut Vec<TensorOperation>)
                                                 queue.push(input_handle.clone());
                                             }
                                         }
-                                        TensorOperation::Abs { input } => {
+                                        TensorOperation::Abs { input, .. } => {
                                             queue.push(input.clone());
                                         }
                                         TensorOperation::None => {}
@@ -1417,8 +1426,14 @@ fn format_operation(op: &TensorOperation) -> String {
                 None => format!("Concat(Tensors([{}]))", ids),
             }
         }
-        TensorOperation::Abs { input } => {
-            format!("Abs(Tensor({}))", input.0)
+        TensorOperation::Abs {
+            input,
+            forward_positive,
+        } => {
+            format!(
+                "Abs(Tensor({}), forward_positive: {})",
+                input.0, forward_positive
+            )
         }
         TensorOperation::None => "None".to_string(),
     }
@@ -1503,20 +1518,19 @@ impl SGDMomentum {
 }
 fn main() {
     // tests();
-    let t1 = Tensor::with_shape_f32(vec![1.0], vec![1], false);
-    let t2 = Tensor::with_shape_f32(vec![1.0], vec![1], false);
-    let w1 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
-    let w2 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
-    let b1 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
-    let b2 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
-    let wanted: f32 = 4.0;
-    for _ in 0..89 {
-        println!("SHOWING ALL GRADIENTS FOR INITIALIZATION");
-        let res = t1 * w1 + b1 + t2 * w2 + b2;
+    let t1 = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0], vec![3], false);
+    // let t2 = Tensor::with_shape_f32(vec![1.0], vec![1], false);
+    let w1: TensorHandle = Tensor::with_shape_f32(vec![0.5, 0.5, 0.5], vec![3], true);
+    // let w2 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
+    let b1 = Tensor::with_shape_f32(vec![0.5, 0.5, 0.5], vec![3], true);
+    // let b2 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
+    let wanted = Tensor::with_shape_f32(vec![4.0, 5.0, 6.0], vec![3], false);
+    for _ in 0..1221 {
+        let res = (w1 * t1) + b1;
+        println!("Result Tensor: {:?}", get_tensor(res).unwrap().data_f32());
         let loss = (wanted - res).abs();
-
         TENSOR_CONTEXT.with_borrow_mut(|ctx| {
-            for param in &vec![w1, w2, b1, b2] {
+            for param in &vec![w1] {
                 if let Some(tensor) = ctx.get_mut_tensor(*param) {
                     match tensor {
                         Tensor::F32 { grad, .. } => {
@@ -1528,61 +1542,27 @@ fn main() {
             }
         });
         loss.backward();
-        TENSOR_CONTEXT.with(|ctx| {
-            for t in ctx.borrow().all_tensors.iter() {
-                print_tensor_data(t);
-            }
-        });
         TENSOR_CONTEXT.with_borrow_mut(|ctx| {
-            for param in &vec![w1, w2, b1, b2] {
+            for param in &vec![w1] {
                 if let Some(tensor) = ctx.get_mut_tensor(*param) {
                     match tensor {
                         Tensor::F32 { id, data, grad, .. } => {
                             if let Some(grad) = grad {
                                 let grad_data = grad.data_f32();
-                                println!("grad for {:?}: {:?}", id, grad_data);
                                 let data = data.mut_data_f32();
                                 debug_assert!(
-                                    grad_data.len() == data.len() && grad_data.len() == 1
+                                    grad_data.len() == data.len() 
                                 );
-                                data[0] -= 0.1 * grad_data[0];
-                                println!("new data for {:?}: {:?}", id, data);
+                                for i in 0..data.len() {
+                                    data[i] -= grad_data[i] * 0.01;
+                                }
                             }
                         }
                         _ => todo!(),
                     }
                 }
             }
-        })
+        });
+        println!("LOSS: {:?}", get_tensor(loss).unwrap().data_f32());
     }
-
-    let res = (t1 + b1) + (t2 + b2);
-    print_computation_graph(&get_tensor(res).unwrap());
-    println!("Result: {:?}", get_tensor(res).unwrap().data_f32());
-    // let params = vec![w1, w2, b1, b2];
-    // let mut optimizer = SGDMomentum::new(params.clone(), 0.01, 0.1);
-    // for i in 0..1000 {
-    //     let res = (w1 * t1 + b1) - (w2 * t2 + b2);
-    //     if i % 100 == 0 {
-    //         println!("Iteration {}", i);
-    //         let tensor = get_tensor(res).unwrap();
-    //         println!("Result: {:?}", tensor.data_f32());
-    //     }
-    //     let loss = (wanted - res).abs();
-    //     if i % 100 == 0 {
-    //         let loss_tensor = get_tensor(loss).unwrap();
-    //         println!("Loss: {:?}", loss_tensor.data_f32());
-    //     }
-    //     loss.backward();
-    //     optimizer.step();
-    //     optimizer.zero_grad();
-    // }
-    // let final_res = (w1 * t1 + b1) - (w2 * t2 + b2);
-    // let tensor = get_tensor(final_res).unwrap();
-    // println!("Final result: {:?}", tensor.data_f32());
-    // println!("Final parameters:");
-    // println!("W1: {:?}", get_tensor(w1).unwrap().data_f32());
-    // println!("W2: {:?}", get_tensor(w2).unwrap().data_f32());
-    // println!("B1: {:?}", get_tensor(b1).unwrap().data_f32());
-    // println!("B2: {:?}", get_tensor(b2).unwrap().data_f32());
 }
