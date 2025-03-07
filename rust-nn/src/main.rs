@@ -1518,14 +1518,14 @@ impl SGDMomentum {
 }
 fn main() {
     // tests();
-    let t1 = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0], vec![3], false);
+    let t1 = Tensor::with_shape_f32(vec![1.0], vec![1], false);
     // let t2 = Tensor::with_shape_f32(vec![1.0], vec![1], false);
-    let w1: TensorHandle = Tensor::with_shape_f32(vec![0.5, 0.5, 0.5], vec![3], true);
+    let w1: TensorHandle = Tensor::with_shape_f32(vec![0.5], vec![1], true);
     // let w2 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
-    let b1 = Tensor::with_shape_f32(vec![0.5, 0.5, 0.5], vec![3], true);
+    let b1 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
     // let b2 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
-    let wanted = Tensor::with_shape_f32(vec![4.0, 5.0, 6.0], vec![3], false);
-    for _ in 0..1221 {
+    let wanted = Tensor::with_shape_f32(vec![4.0], vec![1], false);
+    for _ in 0..2222 {
         let res = (w1 * t1) + b1;
         println!("Result Tensor: {:?}", get_tensor(res).unwrap().data_f32());
         let loss = (wanted - res).abs();
