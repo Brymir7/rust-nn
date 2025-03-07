@@ -1519,14 +1519,14 @@ impl SGDMomentum {
 fn main() {
     // tests();
     let t1 = Tensor::with_shape_f32(vec![1.0], vec![1], false);
-    // let t2 = Tensor::with_shape_f32(vec![1.0], vec![1], false);
+    let t2 = Tensor::with_shape_f32(vec![1.0], vec![1], false);
     let w1: TensorHandle = Tensor::with_shape_f32(vec![0.5], vec![1], true);
-    // let w2 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
+    let w2 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
     let b1 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
-    // let b2 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
+    let b2 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
     let wanted = Tensor::with_shape_f32(vec![4.0], vec![1], false);
-    for _ in 0..2222 {
-        let res = (w1 * t1) + b1;
+    for _ in 0..22222 {
+        let res = (w1 * t1) + b1 + (w2 * t2) + b2;
         println!("Result Tensor: {:?}", get_tensor(res).unwrap().data_f32());
         let loss = (wanted - res).abs();
         TENSOR_CONTEXT.with_borrow_mut(|ctx| {
@@ -1554,7 +1554,7 @@ fn main() {
                                     grad_data.len() == data.len() 
                                 );
                                 for i in 0..data.len() {
-                                    data[i] -= grad_data[i] * 0.01;
+                                    data[i] -= grad_data[i] * 0.001;
                                 }
                             }
                         }
