@@ -377,12 +377,21 @@ impl Tensor {
         while let Some((tensor_h, prev_grad)) = queue.pop_front() {
             match tensor_h {
                 TensorOperation::Add { left, right } => {
+                    let elems_tensor_l: f32 = get_tensor(left)
+                        .unwrap()
+                        .shape()
+                        .iter()
+                        .map(|i| *i as f32)
+                        .product();
                     with_mut_tensor(left, |tensor| {
                         if !tensor.requires_grad() {}
 
                         match tensor {
                             Tensor::F32 { grad, .. } => {
-                                let mut new_grad: TensorData = prev_grad.clone() * 1.0;
+                                let mut new_grad: TensorData = TensorData::F32 { 
+                                    data: vec![prev_grad.data_f32()[0] * 1.0; elems_tensor_l as usize], 
+                                    shape: vec![elems_tensor_l as usize] 
+                                };
                                 match grad {
                                     Some(ref existing_grad) => {
                                         new_grad = new_grad + existing_grad.clone();
@@ -397,6 +406,12 @@ impl Tensor {
                     });
                     match right {
                         OperatorHandle::Tensor(right) => {
+                            let elems_tensor_r: f32 = get_tensor(right)
+                                .unwrap()
+                                .shape()
+                                .iter()
+                                .map(|i| *i as f32)
+                                .product();
                             with_mut_tensor(right, |tensor| {
                                 if !tensor.requires_grad() {
                                     return;
@@ -404,7 +419,10 @@ impl Tensor {
 
                                 match tensor {
                                     Tensor::F32 { grad, .. } => {
-                                        let mut new_grad: TensorData = prev_grad * 1.0;
+                                        let mut new_grad: TensorData = TensorData::F32 { 
+                                            data: vec![prev_grad.data_f32()[0] * 1.0; elems_tensor_r as usize], 
+                                            shape: vec![elems_tensor_l as usize] 
+                                        }; // todo make nicer api
                                         match grad {
                                             Some(ref existing_grad) => {
                                                 new_grad = new_grad + existing_grad.clone();
@@ -415,6 +433,7 @@ impl Tensor {
                                         if tensor.requires_grad() {
                                             queue.push_back((tensor.graph(), new_grad));
                                         }
+                         
                                     }
                                     _ => todo!(),
                                 }
@@ -590,6 +609,12 @@ impl Tensor {
     fn data_f32(&self) -> Vec<f32> {
         match self {
             Tensor::F32 { data, .. } => data.data_f32().clone(),
+            _ => todo!(),
+        }
+    }
+    fn shape(&self) -> Vec<usize> {
+        match self {
+            Tensor::F32 { data, .. } => data.shape().clone(),
             _ => todo!(),
         }
     }
@@ -1518,19 +1543,20 @@ impl SGDMomentum {
 }
 fn main() {
     // tests();
-    let t1 = Tensor::with_shape_f32(vec![1.0], vec![1], false);
-    let t2 = Tensor::with_shape_f32(vec![1.0], vec![1], false);
-    let w1: TensorHandle = Tensor::with_shape_f32(vec![0.5], vec![1], true);
-    let w2 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
-    let b1 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
-    let b2 = Tensor::with_shape_f32(vec![0.5], vec![1], true);
-    let wanted = Tensor::with_shape_f32(vec![4.0], vec![1], false);
-    for _ in 0..22222 {
-        let res = (w1 * t1) + b1 + (w2 * t2) + b2;
-        println!("Result Tensor: {:?}", get_tensor(res).unwrap().data_f32());
+    let t1 = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0], vec![4], false);
+    let t2 = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0], vec![4], false);
+    let w1: TensorHandle = Tensor::with_shape_f32(vec![0.5, 0.5, 0.5, 0.5], vec![4], true);
+    let w2 = Tensor::with_shape_f32(vec![0.5, 0.5, 0.5, 0.5], vec![4], true);
+    let b1 = Tensor::with_shape_f32(vec![0.5, 0.5, 0.5, 0.5], vec![4], true);
+    let b2 = Tensor::with_shape_f32(vec![0.5, 0.5, 0.5, 0.5], vec![4], true);
+    let wanted = Tensor::with_shape_f32(vec![2.0, 4.0, 6.0, 8.0], vec![4], false);
+
+    let params = vec![w1, b1, w2, b2];
+    for _ in 0..2000 {
+        let res = (w1 * t1) + b1;
         let loss = (wanted - res).abs();
         TENSOR_CONTEXT.with_borrow_mut(|ctx| {
-            for param in &vec![w1] {
+            for param in &params {
                 if let Some(tensor) = ctx.get_mut_tensor(*param) {
                     match tensor {
                         Tensor::F32 { grad, .. } => {
@@ -1543,16 +1569,15 @@ fn main() {
         });
         loss.backward();
         TENSOR_CONTEXT.with_borrow_mut(|ctx| {
-            for param in &vec![w1] {
+            for param in &params {
                 if let Some(tensor) = ctx.get_mut_tensor(*param) {
                     match tensor {
                         Tensor::F32 { id, data, grad, .. } => {
                             if let Some(grad) = grad {
                                 let grad_data = grad.data_f32();
                                 let data = data.mut_data_f32();
-                                debug_assert!(
-                                    grad_data.len() == data.len() 
-                                );
+                  
+                                debug_assert!(grad_data.len() == data.len());
                                 for i in 0..data.len() {
                                     data[i] -= grad_data[i] * 0.001;
                                 }
@@ -1563,6 +1588,10 @@ fn main() {
                 }
             }
         });
-        println!("LOSS: {:?}", get_tensor(loss).unwrap().data_f32());
+
+    }
+    for param in params {
+        let tensor = get_tensor(param).unwrap();
+        println!("Param: {:?}, Value: {:?}", param, tensor.data_f32());
     }
 }
