@@ -1,10 +1,9 @@
-use crate::data_loader::{load_mnist_dataset, check_mnist_dataset};
+use crate::data_loader::{check_mnist_dataset, load_mnist_dataset};
 use crate::tensor::{get_tensor, Tensor, TensorHandle, TENSOR_CONTEXT};
 use crate::LinearLayer;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::time::Instant;
-
 
 pub fn train_mnist() -> Result<(), Box<dyn std::error::Error>> {
     // Check for MNIST dataset
@@ -25,7 +24,7 @@ pub fn train_mnist() -> Result<(), Box<dyn std::error::Error>> {
     // Collect model parameters for optimization
     let params = vec![fc1.weights, fc1.bias];
 
-    let batch_size = 64;
+    let batch_size = 1;
     let num_epochs = 5;
     let learning_rate = 0.01;
 
@@ -55,7 +54,7 @@ pub fn train_mnist() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             // Forward pass
-            let output = fc1.forward(&batch_x);
+            let output = fc1.forward(&batch_x.flatten());
 
             // Compute loss (using MSE)
             // Create one-hot encoded target tensors
@@ -63,7 +62,7 @@ pub fn train_mnist() -> Result<(), Box<dyn std::error::Error>> {
             for (i, &label) in batch_labels.iter().enumerate() {
                 target_data[i * 10 + label as usize] = 1.0;
             }
-            let target = Tensor::with_shape_f32(target_data, vec![batch_size, 10], false);
+            let target = Tensor::with_shape_f32(target_data, vec![batch_size, 10], false).flatten();
 
             let loss = output.mse(&target);
 

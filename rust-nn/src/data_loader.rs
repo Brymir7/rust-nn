@@ -73,23 +73,13 @@ pub fn check_mnist_dataset() -> io::Result<PathBuf> {
 
 fn read_file(file_path: &Path) -> io::Result<Vec<u8>> {
     println!("Attempting to open file: {:?}", file_path);
-    match File::open(file_path) {
-        Ok(mut file) => {
-            println!("File opened successfully");
-            let mut data = Vec::new();
-            match file.read_to_end(&mut data) {
-                Ok(_) => {
-                    println!("Read {} bytes from file", data.len());
-                    Ok(data)
-                },
-                Err(e) => {
-                    println!("Error reading file: {:?}", e);
-                    Err(e)
-                }
-            }
+    match fs::read(file_path) {
+        Ok(data) => {
+            println!("Read {} bytes from file", data.len());
+            Ok(data)
         },
         Err(e) => {
-            println!("Error opening file: {:?}", e);
+            println!("Error reading file: {:?}", e);
             Err(e)
         }
     }

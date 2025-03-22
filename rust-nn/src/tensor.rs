@@ -1077,7 +1077,7 @@ macro_rules! impl_tensordata_op {
                             let new_data = data1.iter().map(|&a| a $op scalar_value).collect();
                             TensorData::with_shape_f32(new_data, shape1.clone())
                         } else {
-                            panic!(concat!("Cannot ", $op_name, " tensors of different shapes"))
+                            panic!("Cannot {} tensors of different shapes ({:?}D vs {:?}D)", $op_name, shape1.len(), shape2.len())
                         }
                     }
                     _ => panic!(concat!("Cannot ", $op_name, " tensor data of different types (f32 vs f64)")),
@@ -1498,6 +1498,15 @@ impl TensorHandle {
             .iter()
             .product::<usize>() as f32;
         sum_squared / n
+    }
+    // todo reimplement with a reshape
+    pub fn flatten(&self) -> TensorHandle {
+        let tensor = get_tensor(self.clone()).unwrap();
+        let shape = tensor.shape();
+        let size = shape.iter().product::<usize>();
+        let new_shape = vec![size];
+        let data = tensor.data_f32().clone();
+        Tensor::from_op(data, new_shape, TensorOperation::None)
     }
     pub fn abs(&self) -> TensorHandle {
         let tensor = get_tensor(self.clone()).unwrap();
