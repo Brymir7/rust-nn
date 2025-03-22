@@ -181,6 +181,11 @@ pub enum TensorOperation {
         input: TensorHandle,
         forward_positive: bool, // whether the forward pass val was pos / neg before abs
     },
+    Max {
+        input: TensorHandle,
+        threshold: f32,
+        mask: Vec<bool>, //  which inputs were greater than threshold (for backprop)
+    },
     None,
 }
 
@@ -833,9 +838,41 @@ impl Tensor {
                         });
                     }
                 }
-                _ => {
-                    println!("Operation not implemented {:?}", tensor_h);
-                    todo!()
+                TensorOperation::Max { input, mask, .. } => {
+                    with_mut_tensor(input, |tensor| {
+                        if !tensor.requires_grad() {
+                            return;
+                        }
+                        match tensor {
+                            Tensor::F32 { grad, .. } => {
+                                // For max/ReLU, gradient is 1 where input was > threshold, otherwise 0
+                                let prev_grad_data = prev_grad.data_f32();
+                                let mut filtered_grad = Vec::with_capacity(prev_grad_data.len());
+
+                                for (i, &grad_val) in prev_grad_data.iter().enumerate() {
+                                    filtered_grad.push(if mask[i] { grad_val } else { 0.0 });
+                                }
+
+                                let mut new_grad = TensorData::with_shape_f32(
+                                    filtered_grad,
+                                    prev_grad.shape().clone(),
+                                );
+
+                                match grad {
+                                    Some(existing_grad) => {
+                                        new_grad = new_grad + existing_grad.clone();
+                                    }
+                                    None => {}
+                                }
+
+                                *grad = Some(new_grad.clone());
+                                if tensor.requires_grad() {
+                                    queue.push_back((tensor.graph(), new_grad));
+                                }
+                            }
+                            _ => todo!(),
+                        }
+                    });
                 }
             }
         }
@@ -906,7 +943,28 @@ impl Tensor {
             _ => todo!(),
         }
     }
-
+    pub fn max(&self, threshold: f32) -> TensorHandle {
+        match self {
+            Tensor::F32 { id, data, .. } => {
+                let new_data = data
+                    .data_f32()
+                    .iter()
+                    .map(|&x| if x > threshold { x } else { threshold })
+                    .collect();
+                let mask = data.data_f32().iter().map(|&x| x > threshold).collect();
+                Tensor::from_op(
+                    new_data,
+                    data.shape().clone(),
+                    TensorOperation::Max {
+                        input: id.clone(),
+                        mask,
+                        threshold,
+                    },
+                )
+            }
+            _ => todo!(),
+        }
+    }
     pub fn concat(&self, other: &Tensor, dim: Option<usize>) -> TensorHandle {
         match &self {
             Tensor::F32 { id, data, .. } => match &other {
@@ -1511,6 +1569,10 @@ impl TensorHandle {
     pub fn abs(&self) -> TensorHandle {
         let tensor = get_tensor(self.clone()).unwrap();
         tensor.abs()
+    }
+    pub fn relu(&self) -> TensorHandle {
+        let tensor = get_tensor(self.clone()).unwrap();
+        tensor.max(0.0)
     }
     pub fn backward(&self) {
         let tensor = get_tensor(self.clone()).unwrap();

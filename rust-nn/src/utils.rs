@@ -96,6 +96,16 @@ pub mod utils {
                     input.0, forward_positive
                 )
             }
+            TensorOperation::Max {
+                threshold,
+                input,
+                mask,
+            } => {
+                format!(
+                    "Max(Tensor({}), threshold: {}, mask: {:?})",
+                    input.0, threshold, mask
+                )
+            }
             TensorOperation::None => "None".to_string(),
         }
     }
@@ -139,6 +149,11 @@ pub mod utils {
                         TensorOperation::Abs { input, .. } => {
                             queue.push(input.clone());
                         }
+
+                        TensorOperation::Max { input, .. } => {
+                            queue.push(input.clone());
+                        }
+
                         TensorOperation::None => {}
                     }
 
@@ -171,6 +186,9 @@ pub mod utils {
                                                 }
                                             }
                                             TensorOperation::Abs { input, .. } => {
+                                                queue.push(input.clone());
+                                            }
+                                            TensorOperation::Max { input, .. } => {
                                                 queue.push(input.clone());
                                             }
                                             TensorOperation::None => {}
