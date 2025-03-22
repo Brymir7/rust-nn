@@ -1,5 +1,5 @@
 use once_cell::unsync::Lazy;
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut};
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::{Add, Div, Mul, Sub};
@@ -50,8 +50,28 @@ impl BinaryOp<f64> for MulOp {
 }
 #[derive(Clone, Debug, Copy)]
 struct TensorHandle(usize);
+// Used to reuse tensors (especially intermediary tensors) in consecutive loops
+struct OperationCache {
+    op_result_pointers: Vec<TensorHandle>,
+    current_op_index: usize,
+    start_op_index: usize,
+}
+
+impl OperationCache {
+    fn new() -> Self {
+        Self {
+            op_result_pointers: Vec::new(),
+            current_op_index: 0,
+            start_op_index: 0,
+            }
+    }
+    fn next_iteration(&mut self) {
+        self.current_op_index = self.start_op_index;
+    }
+}
 struct TensorContext {
     all_tensors: Vec<Tensor>,
+    tensor_cache: OperationCache,
 }
 
 impl TensorContext {
@@ -75,6 +95,7 @@ impl TensorContext {
 thread_local! {
     static TENSOR_CONTEXT: RefCell<TensorContext> = RefCell::new(TensorContext {
         all_tensors: Vec::new(),
+        tensor_cache: OperationCache::new(),
     });
 }
 
@@ -91,6 +112,9 @@ fn get_tensor(id: TensorHandle) -> Option<Tensor> {
         ctx.get_tensor(id).cloned()
     })
 }
+fn get_tensor_with_ctx(ctx: &RefMut<'_, TensorContext>, id: TensorHandle) -> Option<Tensor> {
+    ctx.get_tensor(id).cloned()
+}
 fn with_mut_tensor<F, R>(id: TensorHandle, f: F) -> Option<R>
 where
     F: FnOnce(&mut Tensor) -> R,
@@ -101,6 +125,17 @@ where
         Some(f(tensor))
     })
 }
+fn with_mut_tensor_ctx<F, R>(
+    ctx: &mut RefMut<'_, TensorContext>,
+    id: TensorHandle,
+    f: F,
+) -> Option<R>
+where
+    F: FnOnce(&mut Tensor) -> R,
+{
+    let tensor = ctx.get_mut_tensor(id)?;
+    Some(f(tensor))
+}
 
 fn get_next_tensor_id() -> usize {
     TENSOR_CONTEXT.with(|ctx| {
@@ -108,6 +143,10 @@ fn get_next_tensor_id() -> usize {
         ctx.get_next_id()
     })
 }
+fn get_next_tensor_id_with_ctx(ctx: &RefMut<'_, TensorContext>) -> usize {
+    ctx.get_next_id()
+}
+
 #[derive(Clone, Debug)]
 enum OperatorHandle {
     Tensor(TensorHandle),
@@ -283,7 +322,7 @@ fn format_tensor<T: Debug>(
     write!(f, "\n{}]", indent)
 }
 impl Tensor {
-    fn new_f32(data: Vec<f32>, shape: Option<Vec<usize>>, requires_grad: bool) -> TensorHandle {
+    fn new_f32(data: Vec<f32>, shape: Option<Vec<usize>>, req_grad: bool) -> TensorHandle {
         // Validate shape and create proper shape vec
         let shape = match shape {
             Some(shape) => {
@@ -303,57 +342,153 @@ impl Tensor {
             }
         };
 
-        let tensor_data: TensorData = TensorData::F32 { data, shape };
-        let tensor = Tensor::F32 {
-            id: TensorHandle(get_next_tensor_id()),
-            data: tensor_data,
-            graph: TensorOperation::None,
-            grad: None,
-            requires_grad,
-        };
-        register_tensor(tensor)
+        TENSOR_CONTEXT.with(|ctx| {
+            let mut ctx_ref = ctx.borrow_mut();
+            let tensor_data = TensorData::F32 { data, shape };
+            if ctx_ref.tensor_cache.current_op_index < ctx_ref.tensor_cache.op_result_pointers.len()
+            {
+                let cache = &mut ctx_ref.tensor_cache;
+                let handle = cache.op_result_pointers[cache.current_op_index];
+                cache.current_op_index += 1;
+                with_mut_tensor_ctx(&mut ctx_ref, handle, |tensor| match tensor {
+                    Tensor::F32 {
+                        ref mut data,
+                        ref mut graph,
+                        ref mut grad,
+                        ref mut requires_grad,
+                        ..
+                    } => {
+                        *data = tensor_data;
+                        *graph = TensorOperation::None;
+                        *grad = None;
+                        *requires_grad = req_grad;
+                    }
+                    _ => panic!("Expected F32 tensor"),
+                });
+
+                handle
+            } else {
+                // Create a new tensor and add to cache
+                let tensor = Tensor::F32 {
+                    id: TensorHandle(ctx_ref.get_next_id()),
+                    data: tensor_data,
+                    graph: TensorOperation::None,
+                    grad: None,
+                    requires_grad: req_grad,
+                };
+
+                let handle = TensorHandle(ctx_ref.register_tensor(tensor));
+                let cache = &mut ctx_ref.tensor_cache;
+                cache.op_result_pointers.push(handle);
+                cache.current_op_index += 1;
+                handle
+            }
+        })
     }
+
     fn new_f64(data: Vec<f64>, shape: Option<Vec<usize>>, requires_grad: bool) -> TensorHandle {
-        let shape = match shape {
-            Some(shape) => {
-                let expected_size = shape.iter().product::<usize>();
-                assert_eq!(
-                    data.len(),
-                    expected_size,
-                    "Data length {} doesn't match specified shape {:?} with product {}",
-                    data.len(),
-                    shape,
-                    expected_size
-                );
-                shape
-            }
-            None => {
-                vec![data.len()]
-            }
-        };
-        let tensor_data: TensorData = TensorData::F64 { data, shape };
-        let tensor = Tensor::F32 {
-            id: TensorHandle(get_next_tensor_id()),
-            data: tensor_data,
-            graph: TensorOperation::None,
-            grad: None,
-            requires_grad,
-        };
-        register_tensor(tensor)
+        todo!("Implement f64 tensors")
     }
 
     fn from_op(data: Vec<f32>, shape: Vec<usize>, op: TensorOperation) -> TensorHandle {
-        let tensor_data = TensorData::F32 { data, shape };
-        let tensor = Tensor::F32 {
-            id: TensorHandle(get_next_tensor_id()),
-            data: tensor_data,
-            graph: op,
-            grad: None,
-            requires_grad: true,
-        };
-        register_tensor(tensor)
-    }
+        TENSOR_CONTEXT.with(|ctx| {
+            let mut ctx_ref = ctx.borrow_mut();
+            let tensor_data = TensorData::F32 { data, shape };
+            if ctx_ref.tensor_cache.current_op_index < ctx_ref.tensor_cache.op_result_pointers.len()
+            {
+                let cache = &mut ctx_ref.tensor_cache;
+                let handle = cache.op_result_pointers[cache.current_op_index];
+                cache.current_op_index += 1;
+                with_mut_tensor_ctx(&mut ctx_ref, handle, |tensor| match tensor {
+                    Tensor::F32 {
+                        ref mut data,
+                        ref mut graph,
+                        ref mut grad,
+                        ..
+                    } => {
+                        *data = tensor_data;
+                        *graph = op;
+                        *grad = None;
+                    }
+                    _ => panic!("Expected F32 tensor"),
+                });
 
+                handle
+            } else {
+                let tensor =
+                    Self::create_or_update_tensor(Some(&ctx_ref), None, tensor_data, op, true);
+                let handle = TensorHandle(ctx_ref.register_tensor(tensor));
+                let cache = &mut ctx_ref.tensor_cache;
+                cache.op_result_pointers.push(handle);
+                cache.current_op_index += 1;
+                handle
+            }
+        })
+    }
+    fn create_or_update_tensor(
+        ctx: Option<&RefMut<'_, TensorContext>>,
+        id_handle: Option<TensorHandle>,
+        tensor_data: TensorData,
+        op: TensorOperation,
+        requires_grad: bool,
+    ) -> Tensor {
+        match id_handle {
+            Some(handle) => {
+                match ctx {
+                    Some(ctx) => {
+                        let mut existing = get_tensor_with_ctx(ctx, handle).unwrap();
+                        match existing {
+                            Tensor::F32 {
+                                id,
+                                ref mut data,
+                                ref mut graph,
+                                ref mut grad,
+                                requires_grad,
+                            } => {
+                                *data = tensor_data;
+                                *graph = op;
+                                *grad = None; // Reset gradients
+                                existing
+                            }
+                            _ => panic!("Expected F32 tensor"),
+                        }
+                    }
+                    None => {
+                        let mut existing = get_tensor(handle).unwrap();
+                        match existing {
+                            Tensor::F32 {
+                                id,
+                                ref mut data,
+                                ref mut graph,
+                                ref mut grad,
+                                requires_grad,
+                            } => {
+                                *data = tensor_data;
+                                *graph = op;
+                                *grad = None; // Reset gradients
+                                existing
+                            }
+                            _ => panic!("Expected F32 tensor"),
+                        }
+                    }
+                }
+            }
+
+            None => {
+                let next_id = match ctx {
+                    Some(ctx) => get_next_tensor_id_with_ctx(ctx),
+                    None => get_next_tensor_id(),
+                };
+                return Tensor::F32 {
+                    id: TensorHandle(next_id),
+                    data: tensor_data,
+                    graph: op,
+                    grad: None,
+                    requires_grad,
+                };
+            }
+        }
+    }
     fn with_shape_f32(data: Vec<f32>, shape: Vec<usize>, requires_grad: bool) -> TensorHandle {
         Self::new_f32(data, Some(shape), requires_grad)
     }
@@ -977,7 +1112,6 @@ macro_rules! impl_tensordata_op {
                             panic!(concat!("Cannot ", $op_name, " tensors of different shapes"))
                         }
                     }
-                    // Similar cases for F64...
                     _ => panic!(concat!("Cannot ", $op_name, " tensor data of different types (f32 vs f64)")),
                 }
 
@@ -1442,184 +1576,7 @@ impl_tensorhandle_op!(Mul, mul, *, "multiply", Mul);
 impl_tensorhandle_op!(Div, div, /, "divide", Div);
 
 //
-fn get_computation_graph(curr_tensor: &Tensor, graph: &mut Vec<TensorOperation>) {
-    match curr_tensor {
-        Tensor::F32 {
-            id,
-            data,
-            graph: curr_graph,
-            grad: None,
-            ..
-        } => match curr_graph {
-            TensorOperation::None => {
-                return;
-            }
-            _ => {
-                graph.push(curr_graph.clone());
 
-                let mut queue = Vec::new();
-
-                match curr_graph {
-                    TensorOperation::Add { left, right }
-                    | TensorOperation::Mul { left, right }
-                    | TensorOperation::Sub { left, right }
-                    | TensorOperation::Div { left, right } => {
-                        queue.push(left.clone());
-                        if let OperatorHandle::Tensor(right_handle) = right {
-                            queue.push(right_handle.clone());
-                        }
-                    }
-                    TensorOperation::Sum { input } => {
-                        queue.push(input.clone());
-                    }
-                    TensorOperation::Concat { inputs, dim: _ } => {
-                        for input_handle in inputs {
-                            queue.push(input_handle.clone());
-                        }
-                    }
-                    TensorOperation::Abs { input, .. } => {
-                        queue.push(input.clone());
-                    }
-                    TensorOperation::None => {}
-                }
-
-                let mut i = 0;
-                while i < queue.len() {
-                    if let Some(tensor) = get_tensor(queue[i].clone()) {
-                        if let Tensor::F32 { graph: op, .. } = &tensor {
-                            match op {
-                                TensorOperation::None => {}
-                                _ => {
-                                    graph.push(op.clone());
-
-                                    match op {
-                                        TensorOperation::Add { left, right }
-                                        | TensorOperation::Mul { left, right }
-                                        | TensorOperation::Sub { left, right }
-                                        | TensorOperation::Div { left, right } => {
-                                            queue.push(left.clone());
-                                            if let OperatorHandle::Tensor(right_handle) = right {
-                                                queue.push(right_handle.clone());
-                                            }
-                                        }
-                                        TensorOperation::Sum { input } => {
-                                            queue.push(input.clone());
-                                        }
-                                        TensorOperation::Concat { inputs, dim: _ } => {
-                                            for input_handle in inputs {
-                                                queue.push(input_handle.clone());
-                                            }
-                                        }
-                                        TensorOperation::Abs { input, .. } => {
-                                            queue.push(input.clone());
-                                        }
-                                        TensorOperation::None => {}
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    i += 1;
-                }
-            }
-        },
-        Tensor::F64 { data, .. } => {
-            todo!()
-        }
-        _ => todo!(),
-    }
-}
-
-fn print_computation_graph(tensor: &Tensor) {
-    let mut graph = Vec::new();
-    get_computation_graph(tensor, &mut graph);
-
-    println!("Computation Graph:");
-    if graph.is_empty() {
-        println!("  Empty (no operations)");
-        return;
-    }
-
-    for (i, op) in graph.iter().enumerate() {
-        let indent = "  ";
-        println!("{}[{}]: {}", indent, i, format_operation(op));
-    }
-}
-// todo cleanup
-fn print_tensor_data(tensor: &Tensor) {
-    match tensor {
-        Tensor::F32 {
-            id,
-            data,
-
-            graph,
-            grad,
-
-            requires_grad,
-        } => {
-            println!(
-                "ID: {:?}, data: {:?}, grad: {:?}, requires_grad: {:?}",
-                id,
-                data.data_f32(),
-                grad,
-                requires_grad
-            );
-        }
-        _ => todo!(),
-    }
-}
-fn format_operation(op: &TensorOperation) -> String {
-    match op {
-        TensorOperation::Add { left, right } => match right {
-            OperatorHandle::Tensor(right_id) => {
-                format!("Add(Tensor({}) + Tensor({}))", left.0, right_id.0)
-            }
-            OperatorHandle::Scalar(scalar) => format!("Add(Tensor({}) + Scalar{})", left.0, scalar),
-        },
-        TensorOperation::Mul { left, right } => match right {
-            OperatorHandle::Tensor(right_id) => {
-                format!("Mul(Tensor({}) * Tensor({}))", left.0, right_id.0)
-            }
-            OperatorHandle::Scalar(scalar) => format!("Mul(Tensor({}) * Scalar{})", left.0, scalar),
-        },
-        TensorOperation::Sub { left, right } => match right {
-            OperatorHandle::Tensor(right_id) => {
-                format!("Sub(Tensor({}) - Tensor({}))", left.0, right_id.0)
-            }
-            OperatorHandle::Scalar(scalar) => format!("Sub(Tensor({}) - Scalar{})", left.0, scalar),
-        },
-        TensorOperation::Div { left, right } => match right {
-            OperatorHandle::Tensor(right_id) => {
-                format!("Div(Tensor({}) / Tensor({}))", left.0, right_id.0)
-            }
-            OperatorHandle::Scalar(scalar) => format!("Div(Tensor({}) / Scalar{})", left.0, scalar),
-        },
-        TensorOperation::Sum { input } => {
-            format!("Sum(Tensor({}))", input.0)
-        }
-        TensorOperation::Concat { inputs, dim } => {
-            let ids = inputs
-                .iter()
-                .map(|id| id.0.to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            match dim {
-                Some(d) => format!("Concat(Tensors([{}]), dim={})", ids, d),
-                None => format!("Concat(Tensors([{}]))", ids),
-            }
-        }
-        TensorOperation::Abs {
-            input,
-            forward_positive,
-        } => {
-            format!(
-                "Abs(Tensor({}), forward_positive: {})",
-                input.0, forward_positive
-            )
-        }
-        TensorOperation::None => "None".to_string(),
-    }
-}
 struct LinearLayer {
     weights: TensorHandle,
     bias: TensorHandle,
@@ -1635,10 +1592,6 @@ impl LinearLayer {
     }
 
     fn forward(&self, input: &TensorHandle) -> TensorHandle {
-        let input_tensor = get_tensor(*input).unwrap();
-        let input_shape = input_tensor.shape();
-        let batch_size = input_shape[0];
-
         let weights_tensor = get_tensor(self.weights).unwrap();
         let weights_shape = weights_tensor.shape();
         let in_features = weights_shape[0];
@@ -1662,19 +1615,24 @@ impl LinearLayer {
             }
         }
 
-        // Add bias
         result.unwrap() + self.bias
     }
 }
 fn main() {
     let t1 = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0], vec![4], false);
     let lin_l = LinearLayer::new(4, 4);
-    let wanted = Tensor::with_shape_f32(vec![4.0, 6.0, 2.0, 8.0], vec![4], false);
-    let params = vec![lin_l.weights, lin_l.bias];
+    let lin_2 = LinearLayer::new(4, 2);
+    let wanted = Tensor::with_shape_f32(vec![5.0, 4.0], vec![2], false);
+    let params = vec![lin_l.weights, lin_l.bias, lin_2.weights, lin_2.bias];
+    TENSOR_CONTEXT.with_borrow_mut(|ctx| {
+        ctx.tensor_cache.start_op_index = ctx.tensor_cache.op_result_pointers.len();
+    });
     for i in 0..20000 {
         let res = lin_l.forward(&t1);
+        let res = lin_2.forward(&res);
         let loss = res.mse(&wanted);
         TENSOR_CONTEXT.with_borrow_mut(|ctx| {
+            ctx.tensor_cache.next_iteration();
             for param in &params {
                 if let Some(tensor) = ctx.get_mut_tensor(*param) {
                     match tensor {
@@ -1707,17 +1665,19 @@ fn main() {
                 }
             }
         });
+
         if (i + 1) % 100 == 0 {
             println!("Loss: {:?}", get_tensor(loss).unwrap().data_f32());
         }
     }
 
-    for param in params {
-        let tensor = get_tensor(param).unwrap();
-        println!("Param: {:?}, Value: {:?}", param, tensor.data_f32());
-    }
+    let final_result = lin_2.forward(&lin_l.forward(&t1));
     println!(
-        "Result: {:?}",
-        get_tensor(lin_l.forward(&t1)).unwrap().data_f32()
+        "Final result: {:?}",
+        get_tensor(final_result).unwrap().data_f32()
+    );
+    println!(
+        "Total used storage: {}",
+        TENSOR_CONTEXT.with(|ctx| ctx.borrow().all_tensors.len())
     );
 }
