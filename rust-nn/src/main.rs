@@ -3,6 +3,7 @@ pub mod tensor;
 pub mod utils;
 pub mod mnist_example;
 pub mod data_loader;
+pub mod optimizer;
 struct LinearLayer {
     weights: TensorHandle,
     bias: TensorHandle,

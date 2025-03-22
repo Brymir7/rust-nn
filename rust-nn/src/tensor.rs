@@ -49,7 +49,7 @@ impl BinaryOp<f64> for MulOp {
         1.0
     }
 }
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, Hash, PartialEq, Eq)]
 pub struct TensorHandle(pub usize);
 // Used to reuse tensors (especially intermediary tensors) in consecutive loops
 pub struct OperationCache {
@@ -84,7 +84,7 @@ impl TensorContext {
         id
     }
 
-    fn get_tensor(&self, id: TensorHandle) -> Option<&Tensor> {
+    pub fn get_tensor(&self, id: TensorHandle) -> Option<&Tensor> {
         self.all_tensors.get(id.0)
     }
     pub fn get_mut_tensor(&mut self, id: TensorHandle) -> Option<&mut Tensor> {

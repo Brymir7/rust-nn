@@ -1,9 +1,12 @@
 use crate::data_loader::{check_mnist_dataset, load_mnist_dataset};
 use crate::tensor::{get_tensor, Tensor, TensorHandle, TENSOR_CONTEXT};
 use crate::LinearLayer;
+use crate::optimizer::{Optimizer, SGD};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::time::Instant;
+
+
 
 pub fn train_mnist() -> Result<(), Box<dyn std::error::Error>> {
     // Check for MNIST dataset
@@ -19,14 +22,19 @@ pub fn train_mnist() -> Result<(), Box<dyn std::error::Error>> {
     // Create a simple model with two linear layers
     // Input size: 784 (28x28 images)
     // Output size: 10 (digits 0-9)
-    let fc1 = LinearLayer::new(784, 10);
-
+    let fc1 = LinearLayer::new(784, 128);
+    let fc2 = LinearLayer::new(128, 10);
+    
     // Collect model parameters for optimization
-    let params = vec![fc1.weights, fc1.bias];
+    let params = vec![fc1.weights, fc1.bias, fc2.weights, fc2.bias];
 
-    let batch_size = 1;
+    // Hyperparameters
+    let batch_size = 1; // Increased from 1 for better efficiency
     let num_epochs = 5;
     let learning_rate = 0.01;
+    
+    // Create optimizer
+    let optimizer = SGD::new(learning_rate, 0.9); // With momentum
 
     // Prepare for training
     let mut rng = thread_rng();
@@ -43,6 +51,10 @@ pub fn train_mnist() -> Result<(), Box<dyn std::error::Error>> {
         let num_batches = train_dataset.len() / batch_size;
 
         for batch_idx in 0..num_batches {
+            if batch_idx % 100 == 0 {
+                println!("Batch {}/{}", batch_idx + 1, num_batches);
+            }
+            
             let batch_start = batch_idx * batch_size;
             let batch_indices = &indices[batch_start..batch_start + batch_size];
 
@@ -53,8 +65,13 @@ pub fn train_mnist() -> Result<(), Box<dyn std::error::Error>> {
                 ctx.tensor_cache.start_op_index = ctx.tensor_cache.op_result_pointers.len();
             });
 
-            // Forward pass
-            let output = fc1.forward(&batch_x.flatten());
+            // Zero gradients before forward pass
+            optimizer.zero_grad(&params);
+
+            // Forward pass with ReLU activation
+            let x = batch_x.flatten();
+            let hidden = fc1.forward(&x);
+            let output = fc2.forward(&hidden);
 
             // Compute loss (using MSE)
             // Create one-hot encoded target tensors
@@ -66,44 +83,16 @@ pub fn train_mnist() -> Result<(), Box<dyn std::error::Error>> {
 
             let loss = output.mse(&target);
 
-            // Reset gradients
+            // Reset gradients and prepare for backprop
             TENSOR_CONTEXT.with_borrow_mut(|ctx| {
                 ctx.tensor_cache.next_iteration();
-                for param in &params {
-                    if let Some(tensor) = ctx.get_mut_tensor(*param) {
-                        match tensor {
-                            Tensor::F32 { grad, .. } => {
-                                *grad = None;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
             });
 
             // Backward pass
             loss.backward();
 
             // Update parameters
-            TENSOR_CONTEXT.with_borrow_mut(|ctx| {
-                for param in &params {
-                    if let Some(tensor) = ctx.get_mut_tensor(*param) {
-                        match tensor {
-                            Tensor::F32 { data, grad, .. } => {
-                                if let Some(grad) = grad {
-                                    let grad_data = grad.data_f32();
-                                    let data = data.mut_data_f32();
-
-                                    for i in 0..data.len() {
-                                        data[i] -= grad_data[i] * learning_rate;
-                                    }
-                                }
-                            }
-                            _ => todo!(),
-                        }
-                    }
-                }
-            });
+            optimizer.step(&params);
 
             // Calculate accuracy
             let output_data = get_tensor(output).unwrap().data_f32().to_vec();
@@ -165,7 +154,10 @@ pub fn train_mnist() -> Result<(), Box<dyn std::error::Error>> {
         let (batch_x, batch_labels) = test_dataset.get_batch(&batch_indices);
 
         // Forward pass (without tracking gradients)
-        let output = fc1.forward(&batch_x);
+        let x = batch_x.flatten();
+        let hidden = fc1.forward(&x);
+
+        let output = fc2.forward(&hidden);
 
         // Calculate accuracy
         let output_data = get_tensor(output).unwrap().data_f32().to_vec();
