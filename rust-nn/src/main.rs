@@ -1,7 +1,8 @@
 use tensor::{get_tensor, Tensor, TensorHandle, TENSOR_CONTEXT};
 pub mod tensor;
 pub mod utils;
-
+pub mod mnist_example;
+pub mod data_loader;
 struct LinearLayer {
     weights: TensorHandle,
     bias: TensorHandle,
@@ -44,65 +45,66 @@ impl LinearLayer {
     }
 }
 fn main() {
-    let t1 = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0], vec![4], false);
-    let lin_l = LinearLayer::new(4, 4);
-    let lin_2 = LinearLayer::new(4, 2);
-    let wanted = Tensor::with_shape_f32(vec![5.0, 4.0], vec![2], false);
-    let params = vec![lin_l.weights, lin_l.bias, lin_2.weights, lin_2.bias];
-    TENSOR_CONTEXT.with_borrow_mut(|ctx| {
-        ctx.tensor_cache.start_op_index = ctx.tensor_cache.op_result_pointers.len();
-    });
-    for i in 0..20000 {
-        let res = lin_l.forward(&t1);
-        let res = lin_2.forward(&res);
-        let loss = res.mse(&wanted);
-        TENSOR_CONTEXT.with_borrow_mut(|ctx| {
-            ctx.tensor_cache.next_iteration();
-            for param in &params {
-                if let Some(tensor) = ctx.get_mut_tensor(*param) {
-                    match tensor {
-                        Tensor::F32 { grad, .. } => {
-                            *grad = None;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        });
-        loss.backward();
-        TENSOR_CONTEXT.with_borrow_mut(|ctx| {
-            for param in &params {
-                if let Some(tensor) = ctx.get_mut_tensor(*param) {
-                    match tensor {
-                        Tensor::F32 { id, data, grad, .. } => {
-                            if let Some(grad) = grad {
-                                let grad_data = grad.data_f32();
-                                let data = data.mut_data_f32();
+    // let t1 = Tensor::with_shape_f32(vec![1.0, 2.0, 3.0, 4.0], vec![4], false);
+    // let lin_l = LinearLayer::new(4, 4);
+    // let lin_2 = LinearLayer::new(4, 2);
+    // let wanted = Tensor::with_shape_f32(vec![5.0, 4.0], vec![2], false);
+    // let params = vec![lin_l.weights, lin_l.bias, lin_2.weights, lin_2.bias];
+    // TENSOR_CONTEXT.with_borrow_mut(|ctx| {
+    //     ctx.tensor_cache.start_op_index = ctx.tensor_cache.op_result_pointers.len();
+    // });
+    // for i in 0..20000 {
+    //     let res = lin_l.forward(&t1);
+    //     let res = lin_2.forward(&res);
+    //     let loss = res.mse(&wanted);
+    //     TENSOR_CONTEXT.with_borrow_mut(|ctx| {
+    //         ctx.tensor_cache.next_iteration();
+    //         for param in &params {
+    //             if let Some(tensor) = ctx.get_mut_tensor(*param) {
+    //                 match tensor {
+    //                     Tensor::F32 { grad, .. } => {
+    //                         *grad = None;
+    //                     }
+    //                     _ => {}
+    //                 }
+    //             }
+    //         }
+    //     });
+    //     loss.backward();
+    //     TENSOR_CONTEXT.with_borrow_mut(|ctx| {
+    //         for param in &params {
+    //             if let Some(tensor) = ctx.get_mut_tensor(*param) {
+    //                 match tensor {
+    //                     Tensor::F32 { id, data, grad, .. } => {
+    //                         if let Some(grad) = grad {
+    //                             let grad_data = grad.data_f32();
+    //                             let data = data.mut_data_f32();
 
-                                debug_assert!(grad_data.len() == data.len());
-                                for i in 0..data.len() {
-                                    data[i] -= grad_data[i] * 0.001;
-                                }
-                            }
-                        }
-                        _ => todo!(),
-                    }
-                }
-            }
-        });
+    //                             debug_assert!(grad_data.len() == data.len());
+    //                             for i in 0..data.len() {
+    //                                 data[i] -= grad_data[i] * 0.001;
+    //                             }
+    //                         }
+    //                     }
+    //                     _ => todo!(),
+    //                 }
+    //             }
+    //         }
+    //     });
 
-        if (i + 1) % 100 == 0 {
-            println!("Loss: {:?}", get_tensor(loss).unwrap().data_f32());
-        }
-    }
+    //     if (i + 1) % 100 == 0 {
+    //         println!("Loss: {:?}", get_tensor(loss).unwrap().data_f32());
+    //     }
+    // }
 
-    let final_result = lin_2.forward(&lin_l.forward(&t1));
-    println!(
-        "Final result: {:?}",
-        get_tensor(final_result).unwrap().data_f32()
-    );
-    println!(
-        "Total used storage: {}",
-        TENSOR_CONTEXT.with(|ctx| ctx.borrow().all_tensors.len())
-    );
+    // let final_result = lin_2.forward(&lin_l.forward(&t1));
+    // println!(
+    //     "Final result: {:?}",
+    //     get_tensor(final_result).unwrap().data_f32()
+    // );
+    // println!(
+    //     "Total used storage: {}",
+    //     TENSOR_CONTEXT.with(|ctx| ctx.borrow().all_tensors.len())
+    // );
+    mnist_example::train_mnist();
 }
