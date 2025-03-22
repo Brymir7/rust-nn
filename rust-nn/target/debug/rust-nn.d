@@ -1,1 +1,1 @@
-C:\Users\bryclone\Documents\GitHub\rust-nn\rust-nn\target\debug\rust-nn.exe: C:\Users\bryclone\Documents\GitHub\rust-nn\rust-nn\src\main.rs
+C:\Users\bryclone\Documents\GitHub\rust-nn\rust-nn\target\debug\rust-nn.exe: C:\Users\bryclone\Documents\GitHub\rust-nn\rust-nn\src\main.rs C:\Users\bryclone\Documents\GitHub\rust-nn\rust-nn\src\tensor.rs C:\Users\bryclone\Documents\GitHub\rust-nn\rust-nn\src\utils.rs
