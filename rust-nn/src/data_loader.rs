@@ -135,7 +135,7 @@ pub fn load_mnist_dataset(data_dir: &Path, percentage: usize) -> io::Result<(Mni
     println!("Loading from path: {:?}", train_images_path);
 
     let (train_images, image_size) = match load_mnist_images(&train_images_path, percentage) {
-        Ok(result) => {
+        Ok(result) => { 
             println!("Successfully loaded {} training images", result.0.len());
             result
         }

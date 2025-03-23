@@ -195,6 +195,12 @@ pub enum TensorOperation {
         threshold: f32,
         mask: Vec<bool>, //  which inputs were greater than threshold (for backprop)
     },
+    Exp {
+        input: TensorHandle,
+    },
+    Log {
+        input: TensorHandle,
+    },
     None,
 }
 
@@ -481,9 +487,15 @@ impl Tensor {
     }
 
     pub fn random_f32(shape: Vec<usize>, requires_grad: bool) -> TensorHandle {
+        let n_in = shape[0];
+        let n_out = if shape.len() > 1 { shape[1] } else { 1 };
+
+        let scale = (6.0 / (n_in + n_out) as f32).sqrt();
+
         let data = (0..shape.iter().product())
-            .map(|_| rand::random::<f32>())
+            .map(|_| rand::random::<f32>() * 2.0 * scale - scale)
             .collect();
+
         Self::new_f32(data, Some(shape), requires_grad)
     }
 
@@ -880,6 +892,62 @@ impl Tensor {
                         }
                     });
                 }
+                TensorOperation::Exp { input } => {
+                    with_mut_tensor(input, |tensor| {
+                        if !tensor.requires_grad() {
+                            return;
+                        }
+                        match tensor {
+                            Tensor::F32 { grad, data, .. } => {
+                                let input_data = data.data_f32();
+                                let exp_data = input_data.mapv(|x| x.exp());
+                                let new_grad = TensorData::F32 {
+                                    data: prev_grad.data_f32() * exp_data,
+                                };
+
+                                match grad {
+                                    Some(existing_grad) => {
+                                        let combined = new_grad + existing_grad.clone();
+                                        *grad = Some(combined.clone());
+                                        queue.push_back((tensor.graph(), combined));
+                                    }
+                                    None => {
+                                        *grad = Some(new_grad.clone());
+                                        queue.push_back((tensor.graph(), new_grad));
+                                    }
+                                }
+                            }
+                            _ => todo!(),
+                        }
+                    });
+                }
+                TensorOperation::Log { input } => {
+                    with_mut_tensor(input, |tensor| {
+                        if !tensor.requires_grad() {
+                            return;
+                        }
+                        match tensor {
+                            Tensor::F32 { grad, data, .. } => {
+                                let input_data = data.data_f32();
+                                let new_grad = TensorData::F32 {
+                                    data: prev_grad.data_f32() / input_data, 
+                                };
+                                match grad {
+                                    Some(existing_grad) => {
+                                        let combined = new_grad + existing_grad.clone();
+                                        *grad = Some(combined.clone());
+                                        queue.push_back((tensor.graph(), combined));
+                                    }
+                                    None => {
+                                        *grad = Some(new_grad.clone());
+                                        queue.push_back((tensor.graph(), new_grad));
+                                    }
+                                }
+                            }
+                            _ => todo!(),
+                        }
+                    });
+                }
             }
         }
     }
@@ -921,7 +989,25 @@ impl Tensor {
             _ => todo!(),
         }
     }
+    pub fn exp(&self) -> TensorHandle {
+        match self {
+            Tensor::F32 { id, data, .. } => {
+                let new_data = data.data_f32().mapv(|x| x.exp());
+                Tensor::from_op(new_data, TensorOperation::Exp { input: id.clone() })
+            }
+            _ => todo!(),
+        }
+    }
 
+    pub fn log(&self) -> TensorHandle {
+        match self {
+            Tensor::F32 { id, data, .. } => {
+                let new_data = data.data_f32().mapv(|x| x.max(1e-10).ln());
+                Tensor::from_op(new_data, TensorOperation::Log { input: id.clone() })
+            }
+            _ => todo!(),
+        }
+    }
     pub fn abs(&self) -> TensorHandle {
         match self {
             Tensor::F32 { id, data, .. } => {
@@ -1526,12 +1612,35 @@ impl TensorHandle {
         let tensor2 = get_tensor(other.clone()).unwrap();
         tensor1.concat(&tensor2, dim)
     }
+    pub fn exp(&self) -> TensorHandle {
+        let tensor = get_tensor(self.clone()).unwrap();
+        tensor.exp()
+    }
 
+    pub fn log(&self) -> TensorHandle {
+        let tensor = get_tensor(self.clone()).unwrap();
+        tensor.log()
+    }
     pub fn sum(&self) -> TensorHandle {
         let tensor = get_tensor(self.clone()).unwrap();
         tensor.sum()
     }
-
+    pub fn softmax(&self) -> TensorHandle {
+        let tensor = get_tensor(self.clone()).unwrap();
+        let input_data = tensor.data_f32();
+        let max_val = input_data.fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let shifted = self - max_val;
+        let exp_values = shifted.exp();
+        let sum_exp = exp_values.sum();
+        exp_values / sum_exp
+    }
+    pub fn cross_entropy(&self, target: &TensorHandle) -> TensorHandle {
+        let probabilities = self.softmax();
+        let log_probs = probabilities.log();
+        let product = *target * log_probs;
+        let sum_product = product.sum();
+        sum_product * -1.0
+    }
     pub fn mse(&self, target: &TensorHandle) -> TensorHandle {
         let diff = self - target;
         let squared = diff * diff;

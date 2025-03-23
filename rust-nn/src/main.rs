@@ -2,22 +2,22 @@ use ndarray::Axis;
 use optimizer::{Optimizer, SGD};
 use tensor::{get_tensor, Tensor, TensorHandle, TensorOperation, TENSOR_CONTEXT};
 pub mod data_loader;
+pub mod mnist_test;
 pub mod optimizer;
 pub mod tensor;
-pub mod utils;
-pub mod mnist_test;
-struct LinearLayer {
-    weights: TensorHandle,
-    bias: TensorHandle,
+// pub mod utils;
+pub struct LinearLayer {
+    pub weights: TensorHandle,
+    pub bias: TensorHandle,
 }
 impl LinearLayer {
-    fn new(in_dim: usize, out_dim: usize) -> Self {
+    pub fn new(in_dim: usize, out_dim: usize) -> Self {
         let weights = Tensor::random_f32(vec![in_dim, out_dim], true);
         let bias = Tensor::random_f32(vec![out_dim], true);
         Self { weights, bias }
     }
 
-    fn forward(&self, input: &TensorHandle) -> TensorHandle {
+    pub fn forward(&self, input: &TensorHandle) -> TensorHandle {
         let input_tensor = get_tensor(*input).unwrap();
         let weights_tensor = get_tensor(self.weights).unwrap();
 
@@ -89,7 +89,7 @@ fn main() {
     // let fc2 = LinearLayer::new(hidden_size, output_size);
     // let params = vec![fc1.weights, fc1.bias, fc2.weights, fc2.bias];
 
-    // let learning_rate = 0.01;
+    // let learning_rate = 0.001;
     // let momentum = 0.95;
     // let optimizer = SGD::new(learning_rate, momentum);
 
@@ -98,12 +98,12 @@ fn main() {
     //     ctx.tensor_cache.start_op_index = ctx.tensor_cache.op_result_pointers.len();
     // });
 
-    // for i in 0..8000 {
+    // for i in 0..100000 {
     //     optimizer.zero_grad(&params);
     //     optimizer.prepare_next_iteration();
     //     let hidden = fc1.forward(&input_tensor);
     //     let output = fc2.forward(&hidden);
-    //     let loss = output.mse(&target);
+    //     let loss = output.softmax().mse(&target);
 
     //     loss.backward();
 

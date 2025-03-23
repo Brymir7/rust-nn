@@ -1,6 +1,7 @@
 use crate::data_loader::{check_mnist_dataset, load_mnist_dataset, MnistDataset};
 use crate::optimizer::{Optimizer, SGD};
 use crate::tensor::{get_tensor, Tensor, TensorHandle, TensorOperation, TENSOR_CONTEXT};
+use crate::LinearLayer;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::time::Instant;
@@ -68,62 +69,6 @@ fn evaluate_model(
     accuracy
 }
 
-struct LinearLayer {
-    weights: TensorHandle,
-    bias: TensorHandle,
-}
-
-impl LinearLayer {
-    fn new(in_dim: usize, out_dim: usize) -> Self {
-        let weights = Tensor::random_f32(vec![in_dim, out_dim], true);
-        let bias = Tensor::random_f32(vec![out_dim], true);
-        Self { weights, bias }
-    }
-
-    fn forward(&self, input: &TensorHandle) -> TensorHandle {
-        let input_tensor = get_tensor(*input).unwrap();
-        let weights_tensor = get_tensor(self.weights).unwrap();
-
-        let input_data = input_tensor.data_f32();
-        let weights_data = weights_tensor.data_f32();
-
-        let input_shape = input_data.shape();
-
-        let result = if input_shape.len() == 1 {
-            let a_mat_base = weights_data
-                .view()
-                .into_dimensionality::<ndarray::Ix2>()
-                .unwrap();
-            let a_mat_t = a_mat_base.t();
-            let x_vec = input_data
-                .view()
-                .into_dimensionality::<ndarray::Ix1>()
-                .unwrap();
-
-            let mut y_vec = ndarray::Array1::zeros(a_mat_t.shape()[0]);
-            ndarray::linalg::general_mat_vec_mul(1.0, &a_mat_t, &x_vec, 0.0, &mut y_vec);
-
-            y_vec.into_dyn()
-        } else {
-            let a_mat = input_data
-                .view()
-                .into_dimensionality::<ndarray::Ix2>()
-                .unwrap();
-            let b_mat = weights_data
-                .view()
-                .into_dimensionality::<ndarray::Ix2>()
-                .unwrap();
-
-            let mut c_mat = ndarray::Array2::zeros((a_mat.shape()[0], b_mat.shape()[1]));
-            ndarray::linalg::general_mat_mul(1.0, &a_mat, &b_mat, 0.0, &mut c_mat);
-            c_mat.into_dyn()
-        };
-        let result_handle = Tensor::from_op(result, TensorOperation::None);
-
-        result_handle + self.bias
-    }
-}
-
 pub fn run_mnist_training() {
     println!("MNIST Training Example");
 
@@ -150,20 +95,20 @@ pub fn run_mnist_training() {
     );
 
     let input_size = 784; // 28x28 pixels
-    let hidden_size_1 = 32;
+    let hidden_size_1 = 1024;
     let num_classes = 10; // 10 digits (0-9)
-    let batch_size = 32;
+    let batch_size = 1;
 
     let fc1 = LinearLayer::new(input_size, hidden_size_1);
     let fc2 = LinearLayer::new(hidden_size_1, num_classes);
 
     let params = vec![fc1.weights, fc1.bias, fc2.weights, fc2.bias];
 
-    let learning_rate = 0.0001;
-    let momentum = 0.99;
+    let learning_rate = 0.01;
+    let momentum = 0.90;
     let optimizer = SGD::new(learning_rate, momentum);
 
-    let num_epochs = 100000;
+    let num_epochs = 10;
     let mut rng = thread_rng();
     let num_batches = train_dataset.len() / batch_size;
 
@@ -196,7 +141,6 @@ pub fn run_mnist_training() {
             let hidden1_activated = hidden1.relu();
             let output = fc2.forward(&hidden1_activated);
             let fixed_targets = one_hot_encode(&batch_labels, num_classes);
-
             let loss = output.mse(&fixed_targets);
 
             loss.backward();
