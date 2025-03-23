@@ -53,9 +53,7 @@ impl Optimizer for SGD {
                     match tensor {
                         Tensor::F32 { data, grad, .. } => {
                             if let Some(grad) = grad {
-                                // Get or create velocity with same shape as data
                                 let velocity = velocities.entry(param).or_insert_with(|| {
-                                    // Create zeros with same shape as data
                                     let shape = data.shape();
                                     let zeros = ndarray::ArrayD::zeros(ndarray::IxDyn(&shape));
                                     TensorData::F32 { data: zeros }
