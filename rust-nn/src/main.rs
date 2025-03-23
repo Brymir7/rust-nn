@@ -67,14 +67,12 @@ fn main() {
     let output_size = 10;
     let batch_size = 5;
 
-    // Generate 5 random input vectors
     let mut random_inputs = Vec::with_capacity(batch_size * input_size);
     for _ in 0..(batch_size * input_size) {
         random_inputs.push(rand::random::<f32>());
     }
     let input_tensor = Tensor::with_shape_f32(random_inputs, vec![batch_size, input_size], false);
 
-    // Create 5 different target vectors (for digits 0-4)
     let mut target_data = vec![0.0; batch_size * output_size];
     let target_digits = [0, 2, 5, 7, 9]; // Using digits 0, 2, 5, 7, 9
 
@@ -90,7 +88,6 @@ fn main() {
     let fc2 = LinearLayer::new(hidden_size, output_size);
     let params = vec![fc1.weights, fc1.bias, fc2.weights, fc2.bias];
 
-    // Initialize SGD optimizer with learning rate and momentum
     let learning_rate = 0.01;
     let momentum = 0.95;
     let optimizer = SGD::new(learning_rate, momentum);
@@ -119,14 +116,11 @@ fn main() {
             let mut correct_count = 0;
             println!("Epoch {} - Loss: {:.6}", i + 1, loss_val);
 
-            // Evaluate each example in the batch
             for b in 0..batch_size {
-                // Find the predicted digit (max value in output)
                 let mut max_idx = 0;
-                let mut max_val = output_data[[b, 0]]; // Using 2D indexing
+                let mut max_val = output_data[[b, 0]];
                 for j in 1..output_size {
                     if output_data[[b, j]] > max_val {
-                        // Using 2D indexing
                         max_val = output_data[[b, j]];
                         max_idx = j;
                     }
@@ -149,6 +143,11 @@ fn main() {
 
             println!("Accuracy: {}/{} correct", correct_count, batch_size);
 
+            if correct_count == batch_size {
+                println!("Successfully achieved 100% accuracy at epoch {}!", i + 1);
+                break;
+            }
+
             if loss_val < 0.0001 {
                 println!("Successfully overfit all examples at epoch {}!", i + 1);
                 break;
@@ -156,7 +155,6 @@ fn main() {
         }
     }
 
-    // Final evaluation
     let final_output = fc2.forward(&fc1.forward(&input_tensor));
     let final_output_data = get_tensor(final_output).unwrap();
     let output_data = final_output_data.data_f32();
@@ -165,7 +163,7 @@ fn main() {
     for b in 0..batch_size {
         let mut predictions = Vec::with_capacity(output_size);
         for j in 0..output_size {
-            predictions.push(output_data[[b, j]]); // Using 2D indexing
+            predictions.push(output_data[[b, j]]);
         }
         println!(
             "Example {} (target digit {}): {:?}",
