@@ -1,6 +1,6 @@
 #![allow(dead_code)]
+use ndarray::{Array, ArrayD, Axis, Dimension, IxDyn};
 use std::fmt::Debug;
-use std::process::id;
 use std::{
     cell::{RefCell, RefMut},
     collections::VecDeque,
@@ -49,14 +49,17 @@ impl BinaryOp<f64> for MulOp {
         1.0
     }
 }
+
 #[derive(Clone, Debug, Copy, Hash, PartialEq, Eq)]
 pub struct TensorHandle(pub usize);
+
 // Used to reuse tensors (especially intermediary tensors) in consecutive loops
 pub struct OperationCache {
     pub op_result_pointers: Vec<TensorHandle>,
     pub current_op_index: usize,
     pub start_op_index: usize,
 }
+
 impl OperationCache {
     fn new() -> Self {
         Self {
@@ -69,6 +72,7 @@ impl OperationCache {
         self.current_op_index = self.start_op_index;
     }
 }
+
 pub struct TensorContext {
     pub all_tensors: Vec<Tensor>,
     pub tensor_cache: OperationCache,
@@ -112,9 +116,11 @@ pub fn get_tensor(id: TensorHandle) -> Option<Tensor> {
         ctx.get_tensor(id).cloned()
     })
 }
+
 fn get_tensor_with_ctx(ctx: &RefMut<'_, TensorContext>, id: TensorHandle) -> Option<Tensor> {
     ctx.get_tensor(id).cloned()
 }
+
 fn with_mut_tensor<F, R>(id: TensorHandle, f: F) -> Option<R>
 where
     F: FnOnce(&mut Tensor) -> R,
@@ -125,6 +131,7 @@ where
         Some(f(tensor))
     })
 }
+
 fn with_mut_tensor_ctx<F, R>(
     ctx: &mut RefMut<'_, TensorContext>,
     id: TensorHandle,
@@ -143,6 +150,7 @@ fn get_next_tensor_id() -> usize {
         ctx.get_next_id()
     })
 }
+
 fn get_next_tensor_id_with_ctx(ctx: &RefMut<'_, TensorContext>) -> usize {
     ctx.get_next_id()
 }
@@ -152,6 +160,7 @@ pub enum OperatorHandle {
     Tensor(TensorHandle),
     Scalar(f32),
 }
+
 #[derive(Clone, Debug)]
 pub enum TensorOperation {
     Add {
@@ -189,49 +198,53 @@ pub enum TensorOperation {
     None,
 }
 
+// New TensorData implementation using ndarray
 #[derive(Clone, Debug)]
 pub enum TensorData {
-    F32 { data: Vec<f32>, shape: Vec<usize> },
-    F64 { data: Vec<f64>, shape: Vec<usize> },
+    F32 { data: ArrayD<f32> },
+    F64 { data: ArrayD<f64> },
 }
+
 impl TensorData {
-    pub fn shape(&self) -> &Vec<usize> {
+    pub fn shape(&self) -> Vec<usize> {
         match self {
-            TensorData::F32 { shape, .. } => shape,
-            TensorData::F64 { shape, .. } => shape,
+            TensorData::F32 { data } => data.shape().to_vec(),
+            TensorData::F64 { data } => data.shape().to_vec(),
         }
     }
 
-    pub fn data_f32(&self) -> &Vec<f32> {
+    pub fn data_f32(&self) -> &ArrayD<f32> {
         match self {
-            TensorData::F32 { data, .. } => data,
+            TensorData::F32 { data } => data,
             _ => panic!("Not an f32 tensor"),
         }
     }
-    pub fn mut_data_f32(&mut self) -> &mut Vec<f32> {
+
+    pub fn mut_data_f32(&mut self) -> &mut ArrayD<f32> {
         match self {
-            TensorData::F32 { data, .. } => data,
+            TensorData::F32 { data } => data,
             _ => panic!("Not an f32 tensor"),
         }
     }
-    fn data_f64(&self) -> &Vec<f64> {
+
+    fn data_f64(&self) -> &ArrayD<f64> {
         match self {
-            TensorData::F64 { data, .. } => data,
+            TensorData::F64 { data } => data,
             _ => panic!("Not an f64 tensor"),
         }
     }
 
     pub fn to_f32_vec(&self) -> Vec<f32> {
         match self {
-            TensorData::F32 { data, .. } => data.clone(),
-            TensorData::F64 { data, .. } => data.iter().map(|&x| x as f32).collect(),
+            TensorData::F32 { data } => data.iter().cloned().collect(),
+            TensorData::F64 { data } => data.iter().map(|&x| x as f32).collect(),
         }
     }
 
     fn to_f64_vec(&self) -> Vec<f64> {
         match self {
-            TensorData::F32 { data, .. } => data.iter().map(|&x| x as f64).collect(),
-            TensorData::F64 { data, .. } => data.clone(),
+            TensorData::F32 { data } => data.iter().map(|&x| x as f64).collect(),
+            TensorData::F64 { data } => data.iter().cloned().collect(),
         }
     }
 
@@ -245,8 +258,8 @@ impl TensorData {
 
     pub fn size(&self) -> usize {
         match self {
-            TensorData::F32 { data, .. } => data.len(),
-            TensorData::F64 { data, .. } => data.len(),
+            TensorData::F32 { data } => data.len(),
+            TensorData::F64 { data } => data.len(),
         }
     }
 }
@@ -267,6 +280,7 @@ pub enum Tensor {
         grad: Option<TensorData>,
     },
 }
+
 impl Debug for Tensor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -278,48 +292,18 @@ impl Debug for Tensor {
                 ..
             } => {
                 write!(f, "Tensor::F32 {:?}{{\n", id)?;
-                format_tensor(f, data.data_f32(), data.shape(), 0)?;
-                write!(f, "\ngraph: {:?}\n}}", graph);
-                write!(f, "\ngrad:  {:?}\n}}", grad)
+                write!(f, "  data: {:?}\n", data.data_f32())?;
+                write!(f, "  graph: {:?}\n", graph)?;
+                write!(f, "  grad: {:?}\n}}", grad)
             }
             _ => todo!(),
         }
     }
 }
 
-fn format_tensor<T: Debug>(
-    f: &mut std::fmt::Formatter<'_>,
-    data: &[T],
-    shape: &[usize],
-    depth: usize,
-) -> std::fmt::Result {
-    let indent = "  ".repeat(depth + 1);
-
-    if shape.len() <= 1 {
-        return write!(f, "{}[{:?}]", indent, data);
-    }
-    write!(f, "{}[", indent)?;
-
-    let dim_size = shape[0];
-    let sub_dim_size: usize = shape[1..].iter().product();
-
-    for i in 0..dim_size {
-        if i > 0 {
-            write!(f, ",\n")?;
-        } else {
-            write!(f, "\n")?;
-        }
-
-        let start = i * sub_dim_size;
-        let end = start + sub_dim_size;
-        format_tensor(f, &data[start..end], &shape[1..], depth + 1)?;
-    }
-
-    write!(f, "\n{}]", indent)
-}
 impl Tensor {
     pub fn new_f32(data: Vec<f32>, shape: Option<Vec<usize>>, req_grad: bool) -> TensorHandle {
-        let shape = match shape {
+        let array_data = match shape {
             Some(shape) => {
                 let expected_size = shape.iter().product::<usize>();
                 assert_eq!(
@@ -330,21 +314,21 @@ impl Tensor {
                     shape,
                     expected_size
                 );
-                shape
+                Array::from_shape_vec(IxDyn(&shape), data).unwrap()
             }
-            None => {
-                vec![data.len()]
-            }
+            None => Array::from_shape_vec(IxDyn(&[data.len()]), data).unwrap(),
         };
 
         TENSOR_CONTEXT.with(|ctx| {
             let mut ctx_ref = ctx.borrow_mut();
-            let tensor_data = TensorData::F32 { data, shape };
+            let tensor_data = TensorData::F32 { data: array_data };
+
             if ctx_ref.tensor_cache.current_op_index < ctx_ref.tensor_cache.op_result_pointers.len()
             {
                 let cache = &mut ctx_ref.tensor_cache;
                 let handle = cache.op_result_pointers[cache.current_op_index];
                 cache.current_op_index += 1;
+
                 with_mut_tensor_ctx(&mut ctx_ref, handle, |tensor| match tensor {
                     Tensor::F32 {
                         ref mut data,
@@ -384,15 +368,17 @@ impl Tensor {
         todo!("Implement f64 tensors")
     }
 
-    fn from_op(data: Vec<f32>, shape: Vec<usize>, op: TensorOperation) -> TensorHandle {
+    pub fn from_op(data: ArrayD<f32>, op: TensorOperation) -> TensorHandle {
         TENSOR_CONTEXT.with(|ctx| {
             let mut ctx_ref = ctx.borrow_mut();
-            let tensor_data = TensorData::F32 { data, shape };
+            let tensor_data = TensorData::F32 { data };
+
             if ctx_ref.tensor_cache.current_op_index < ctx_ref.tensor_cache.op_result_pointers.len()
             {
                 let cache = &mut ctx_ref.tensor_cache;
                 let handle = cache.op_result_pointers[cache.current_op_index];
                 cache.current_op_index += 1;
+
                 with_mut_tensor_ctx(&mut ctx_ref, handle, |tensor| match tensor {
                     Tensor::F32 {
                         ref mut data,
@@ -419,6 +405,7 @@ impl Tensor {
             }
         })
     }
+
     fn create_or_update_tensor(
         ctx: Option<&RefMut<'_, TensorContext>>,
         id_handle: Option<TensorHandle>,
@@ -465,7 +452,6 @@ impl Tensor {
                     }
                 }
             },
-
             None => {
                 let next_id = match ctx {
                     Some(ctx) => get_next_tensor_id_with_ctx(ctx),
@@ -481,32 +467,34 @@ impl Tensor {
             }
         }
     }
+
     pub fn with_shape_f32(data: Vec<f32>, shape: Vec<usize>, requires_grad: bool) -> TensorHandle {
         Self::new_f32(data, Some(shape), requires_grad)
     }
+
     fn with_shape_f64(data: Vec<f64>, shape: Vec<usize>, requires_grad: bool) -> TensorHandle {
         Self::new_f64(data, Some(shape), requires_grad)
     }
+
     pub fn from_vec_f32(data: Vec<f32>, requires_grad: bool) -> TensorHandle {
         Self::new_f32(data, None, requires_grad)
     }
+
     pub fn random_f32(shape: Vec<usize>, requires_grad: bool) -> TensorHandle {
         let data = (0..shape.iter().product())
             .map(|_| rand::random::<f32>())
             .collect();
         Self::new_f32(data, Some(shape), requires_grad)
     }
+
     pub fn backward(&self) {
         let mut queue: VecDeque<(TensorOperation, TensorData)> = VecDeque::new();
+
         match self {
             Tensor::F32 { graph, data, .. } => {
                 let shape = data.shape();
-                let size = shape.iter().product::<usize>();
-                let ones = vec![1.0; size];
-                queue.push_back((
-                    graph.clone(),
-                    TensorData::with_shape_f32(ones, shape.clone()),
-                ));
+                let ones_array = Array::ones(IxDyn(&shape));
+                queue.push_back((graph.clone(), TensorData::F32 { data: ones_array }));
             }
             _ => todo!(),
         }
@@ -521,11 +509,8 @@ impl Tensor {
 
                         match tensor {
                             Tensor::F32 { grad, data, .. } => {
-                                let shape = data.shape().clone();
-                                let mut new_grad = TensorData::F32 {
-                                    data: prev_grad.data_f32().clone(),
-                                    shape: shape.clone(),
-                                };
+                                let shape = data.shape();
+                                let mut new_grad = prev_grad.clone();
 
                                 match grad {
                                     Some(ref existing_grad) => {
@@ -550,11 +535,7 @@ impl Tensor {
 
                                 match tensor {
                                     Tensor::F32 { grad, data, .. } => {
-                                        let shape = data.shape().clone();
-                                        let mut new_grad = TensorData::F32 {
-                                            data: prev_grad.data_f32().clone(),
-                                            shape: shape.clone(),
-                                        };
+                                        let mut new_grad = prev_grad.clone();
 
                                         match grad {
                                             Some(ref existing_grad) => {
@@ -580,7 +561,7 @@ impl Tensor {
                         }
                         match tensor {
                             Tensor::F32 { grad, .. } => {
-                                let mut new_grad: TensorData = prev_grad.clone() * 1.0;
+                                let mut new_grad = prev_grad.clone();
                                 match grad {
                                     Some(ref existing_grad) => {
                                         new_grad = new_grad + existing_grad.clone();
@@ -629,22 +610,27 @@ impl Tensor {
                         match tensor {
                             Tensor::F32 { grad, data, .. } => {
                                 let input_shape = data.shape();
-                                let input_size = input_shape.iter().product::<usize>();
-                                let scalar_grad_value = prev_grad.data_f32()[0];
-                                let broadcast_grad = vec![scalar_grad_value; input_size];
-                                let mut new_grad =
-                                    TensorData::with_shape_f32(broadcast_grad, input_shape.clone());
+                                let scalar_grad_value = *prev_grad.data_f32().first().unwrap();
+                                let broadcast_grad =
+                                    Array::from_elem(IxDyn(&input_shape), scalar_grad_value);
+                                let new_grad = TensorData::F32 {
+                                    data: broadcast_grad,
+                                };
 
                                 match grad {
                                     Some(grad) => {
-                                        new_grad = new_grad + grad.clone();
+                                        let combined_grad = new_grad + grad.clone();
+                                        *grad = combined_grad.clone();
+                                        if tensor.requires_grad() {
+                                            queue.push_back((tensor.graph(), combined_grad));
+                                        }
                                     }
-                                    None => {}
-                                }
-
-                                *grad = Some(new_grad.clone());
-                                if tensor.requires_grad() {
-                                    queue.push_back((tensor.graph(), new_grad));
+                                    None => {
+                                        *grad = Some(new_grad.clone());
+                                        if tensor.requires_grad() {
+                                            queue.push_back((tensor.graph(), new_grad));
+                                        }
+                                    }
                                 }
                             }
                             _ => todo!(),
@@ -657,7 +643,9 @@ impl Tensor {
                             let right_tensor = get_tensor(right).unwrap();
                             right_tensor.data_f32().clone()
                         }
-                        OperatorHandle::Scalar(_) => vec![1.0],
+                        OperatorHandle::Scalar(scalar_val) => {
+                            Array::from_elem(IxDyn(&[1]), scalar_val)
+                        }
                     };
                     with_mut_tensor(left, |tensor| {
                         if !tensor.requires_grad() {
@@ -665,8 +653,8 @@ impl Tensor {
                         }
                         match tensor {
                             Tensor::F32 { data, grad, .. } => {
-                                let new_grad = TensorData::from_vec_f32(right_data);
-                                let mut new_grad: TensorData = prev_grad.clone() * new_grad;
+                                let right_tensor_data = TensorData::F32 { data: right_data };
+                                let mut new_grad = prev_grad.clone() * right_tensor_data;
                                 match grad {
                                     Some(grad) => {
                                         new_grad = new_grad + grad.clone();
@@ -689,7 +677,7 @@ impl Tensor {
                             right_tensor.data_f32().clone()
                         }
                         OperatorHandle::Scalar(scalar_val) => {
-                            vec![scalar_val]
+                            Array::from_elem(IxDyn(&[1]), scalar_val)
                         }
                     };
 
@@ -702,12 +690,12 @@ impl Tensor {
                             Tensor::F32 { grad, .. } => {
                                 let mut new_grad = match right {
                                     OperatorHandle::Tensor(_) => {
-                                        // For tensor division
-                                        let divisor = TensorData::from_vec_f32(right_data);
+                                        let divisor = TensorData::F32 {
+                                            data: right_data.clone(),
+                                        };
                                         prev_grad.clone() / divisor
                                     }
                                     OperatorHandle::Scalar(scalar_val) => {
-                                        // For scalar division, scale gradient by 1/scalar
                                         prev_grad.clone() * (1.0 / scalar_val)
                                     }
                                 };
@@ -742,29 +730,28 @@ impl Tensor {
                                     let right_data = data.data_f32();
 
                                     // Calculate gradient: dz/dy = -x/y²
-                                    let mut denom_grad = Vec::with_capacity(right_data.len());
-                                    for i in 0..right_data.len() {
-                                        denom_grad.push(
-                                            -left_data[i] / (right_data[i] * right_data[i])
-                                                * prev_grad.data_f32()[0],
-                                        );
-                                    }
+                                    let neg_left = -left_data;
+                                    let right_squared = right_data * right_data;
+                                    let mut denom_grad = &neg_left / &right_squared;
 
-                                    let mut new_grad = TensorData::with_shape_f32(
-                                        denom_grad,
-                                        data.shape().clone(),
-                                    );
+                                    denom_grad *= prev_grad.data_f32();
+
+                                    let new_grad = TensorData::F32 { data: denom_grad };
 
                                     match grad {
                                         Some(existing_grad) => {
-                                            new_grad = new_grad + existing_grad.clone();
+                                            let combined = new_grad + existing_grad.clone();
+                                            *grad = Some(combined.clone());
+                                            if tensor.requires_grad() {
+                                                queue.push_back((tensor.graph(), combined));
+                                            }
                                         }
-                                        None => {}
-                                    }
-
-                                    *grad = Some(new_grad.clone());
-                                    if tensor.requires_grad() {
-                                        queue.push_back((tensor.graph(), new_grad));
+                                        None => {
+                                            *grad = Some(new_grad.clone());
+                                            if tensor.requires_grad() {
+                                                queue.push_back((tensor.graph(), new_grad));
+                                            }
+                                        }
                                     }
                                 }
                                 _ => todo!(),
@@ -788,9 +775,7 @@ impl Tensor {
                                     Some(grad) => {
                                         new_grad = new_grad + grad.clone();
                                     }
-                                    None => {
-                                        new_grad = new_grad;
-                                    }
+                                    None => {}
                                 }
                                 *grad = Some(new_grad.clone());
                                 if tensor.requires_grad() {
@@ -802,35 +787,46 @@ impl Tensor {
                     });
                 }
                 TensorOperation::None => {}
-                TensorOperation::Concat { inputs, dim: _ } => {
+                TensorOperation::Concat { inputs, dim } => {
+                    let dim = dim.unwrap_or(0);
                     let mut offset = 0;
-                    let mut input_grads = Vec::new();
-                    for input in &inputs {
-                        let tensor = get_tensor(*input).unwrap();
-                        let shape = tensor.shape();
-                        let size = shape.iter().product::<usize>();
-                        let input_grad = prev_grad.data_f32()[offset..offset + size].to_vec();
-                        offset += size;
-                        input_grads.push(input_grad);
-                    }
 
-                    for (input, input_grad) in inputs.iter().zip(input_grads) {
-                        with_mut_tensor(*input, |tensor| {
+                    for input_handle in &inputs {
+                        with_mut_tensor(*input_handle, |tensor| {
                             if !tensor.requires_grad() {
                                 return;
                             }
+
                             match tensor {
-                                Tensor::F32 { grad, .. } => {
-                                    let mut new_grad = TensorData::from_vec_f32(input_grad);
+                                Tensor::F32 { grad, data, .. } => {
+                                    let input_shape = data.shape();
+                                    let mut indices = vec![];
+
+                                    for i in 0..prev_grad.data_f32().ndim() {
+                                        if i == dim {
+                                            let slice_size = input_shape[i];
+                                            indices.push((offset, offset + slice_size));
+                                            offset += slice_size;
+                                        } else {
+                                            indices.push((0, prev_grad.data_f32().shape()[i]));
+                                        }
+                                    }
+
+                                    let input_grad = prev_grad.data_f32().slice(ndarray::s![..]);
+                                    let new_grad = TensorData::F32 {
+                                        data: input_grad.to_owned().into_dyn(),
+                                    };
+
                                     match grad {
                                         Some(existing_grad) => {
-                                            new_grad = new_grad + existing_grad.clone();
+                                            let combined = new_grad + existing_grad.clone();
+                                            *grad = Some(combined.clone());
+                                            queue.push_back((tensor.graph(), combined));
                                         }
-                                        None => {}
-                                    }
-                                    *grad = Some(new_grad.clone());
-                                    if tensor.requires_grad() {
-                                        queue.push_back((tensor.graph(), new_grad));
+                                        None => {
+                                            *grad = Some(new_grad.clone());
+                                            queue.push_back((tensor.graph(), new_grad));
+                                        }
                                     }
                                 }
                                 _ => todo!(),
@@ -844,30 +840,40 @@ impl Tensor {
                             return;
                         }
                         match tensor {
-                            Tensor::F32 { grad, .. } => {
-                                // For max/ReLU, gradient is 1 where input was > threshold, otherwise 0
-                                let prev_grad_data = prev_grad.data_f32();
-                                let mut filtered_grad = Vec::with_capacity(prev_grad_data.len());
+                            Tensor::F32 { grad, data, .. } => {
+                                let input_shape = data.shape();
+                                let mut filtered_grad_array = Array::zeros(IxDyn(&input_shape));
 
-                                for (i, &grad_val) in prev_grad_data.iter().enumerate() {
-                                    filtered_grad.push(if mask[i] { grad_val } else { 0.0 });
+                                // Apply mask to gradient - only pass gradient where input > threshold
+                                for (i, &pass) in mask.iter().enumerate() {
+                                    if pass {
+                                        let idx = ndarray::indices(input_shape.clone());
+                                        let mut linear_count = 0;
+                                        for multi_idx in idx {
+                                            if linear_count == i {
+                                                filtered_grad_array[&multi_idx] =
+                                                    prev_grad.data_f32().as_slice().unwrap()[i];
+                                                break;
+                                            }
+                                            linear_count += 1;
+                                        }
+                                    }
                                 }
 
-                                let mut new_grad = TensorData::with_shape_f32(
-                                    filtered_grad,
-                                    prev_grad.shape().clone(),
-                                );
+                                let new_grad = TensorData::F32 {
+                                    data: filtered_grad_array,
+                                };
 
                                 match grad {
                                     Some(existing_grad) => {
-                                        new_grad = new_grad + existing_grad.clone();
+                                        let combined = new_grad + existing_grad.clone();
+                                        *grad = Some(combined.clone());
+                                        queue.push_back((tensor.graph(), combined));
                                     }
-                                    None => {}
-                                }
-
-                                *grad = Some(new_grad.clone());
-                                if tensor.requires_grad() {
-                                    queue.push_back((tensor.graph(), new_grad));
+                                    None => {
+                                        *grad = Some(new_grad.clone());
+                                        queue.push_back((tensor.graph(), new_grad));
+                                    }
                                 }
                             }
                             _ => todo!(),
@@ -877,84 +883,84 @@ impl Tensor {
             }
         }
     }
+
     pub fn grad_f32(&self) -> f32 {
         match self {
             Tensor::F32 { grad, .. } => match grad {
-                Some(grad) => grad.data_f32()[0],
+                Some(grad) => *grad.data_f32().first().unwrap_or(&0.0),
                 None => 0.0,
             },
             _ => todo!(),
         }
     }
+
     pub fn requires_grad(&self) -> bool {
         match self {
             Tensor::F32 { requires_grad, .. } => *requires_grad,
             _ => todo!(),
         }
     }
+
     pub fn graph(&self) -> TensorOperation {
         match self {
             Tensor::F32 { graph, .. } => graph.clone(),
             _ => todo!(),
         }
     }
-    pub fn data_f32(&self) -> Vec<f32> {
+
+    pub fn data_f32(&self) -> &ArrayD<f32> {
         match self {
-            Tensor::F32 { data, .. } => data.data_f32().clone(),
+            Tensor::F32 { data, .. } => &data.data_f32(),
             _ => todo!(),
         }
     }
+
     pub fn shape(&self) -> Vec<usize> {
         match self {
-            Tensor::F32 { data, .. } => data.shape().clone(),
+            Tensor::F32 { data, .. } => data.shape(),
             _ => todo!(),
         }
     }
+
     pub fn abs(&self) -> TensorHandle {
         match self {
             Tensor::F32 { id, data, .. } => {
-                debug_assert!(data.data_f32().len() > 0);
-                let forward_positive = data.data_f32()[0] >= 0.0;
-                let new_data = data.data_f32().iter().map(|x| x.abs()).collect();
+                let forward_positive = *data.data_f32().first().unwrap_or(&0.0) >= 0.0;
+                let new_data = data.data_f32().mapv(|x| x.abs());
+
                 Tensor::from_op(
                     new_data,
-                    data.shape().clone(),
                     TensorOperation::Abs {
                         input: id.clone(),
-                        forward_positive: forward_positive,
+                        forward_positive,
                     },
                 )
             }
             _ => todo!(),
         }
     }
-    // todo should be along axis
+    // todo add along dim
     pub fn sum(&self) -> TensorHandle {
         match self {
             Tensor::F32 { id, data, .. } => {
-                let sum = data.data_f32().iter().sum();
-                let new_data = vec![sum];
-                Tensor::from_op(
-                    new_data,
-                    vec![1],
-                    TensorOperation::Sum { input: id.clone() },
-                )
+                let sum = data.data_f32().sum();
+                let new_data = Array::from_elem(IxDyn(&[1]), sum);
+
+                Tensor::from_op(new_data, TensorOperation::Sum { input: id.clone() })
             }
             _ => todo!(),
         }
     }
+
     pub fn max(&self, threshold: f32) -> TensorHandle {
         match self {
             Tensor::F32 { id, data, .. } => {
-                let new_data = data
-                    .data_f32()
-                    .iter()
-                    .map(|&x| if x > threshold { x } else { threshold })
-                    .collect();
-                let mask = data.data_f32().iter().map(|&x| x > threshold).collect();
+                let data_f32 = data.data_f32();
+                let mask: Vec<bool> = data_f32.iter().map(|&x| x > threshold).collect();
+                let new_data = data_f32.mapv(|x| if x > threshold { x } else { threshold });
+
                 Tensor::from_op(
                     new_data,
-                    data.shape().clone(),
                     TensorOperation::Max {
                         input: id.clone(),
                         mask,
@@ -965,92 +971,40 @@ impl Tensor {
             _ => todo!(),
         }
     }
+
     pub fn concat(&self, other: &Tensor, dim: Option<usize>) -> TensorHandle {
-        match &self {
-            Tensor::F32 { id, data, .. } => match &other {
+        match (self, other) {
+            (
+                Tensor::F32 { id, data, .. },
                 Tensor::F32 {
                     id: other_id,
                     data: other_data,
                     ..
-                } => {
-                    let other_shape = other_data.shape();
-                    let shape = data.shape();
-                    let data = data.data_f32();
-                    let other_data = other_data.data_f32();
-                    match dim {
-                        // dim = 0
-                        None => {
-                            assert_eq!(
-                                shape[0], other_shape[0],
-                                "Shapes must match for concatenation"
-                            );
-                            let mut new_data = data.clone();
-                            new_data.extend(other_data);
-                            let mut new_shape = shape.clone();
-                            new_shape[0] += other_shape[0];
-                            Tensor::from_op(
-                                new_data,
-                                new_shape,
-                                TensorOperation::Concat {
-                                    inputs: vec![id.clone(), other_id.clone()],
-                                    dim: Some(0),
-                                },
-                            )
-                        }
-                        Some(dim) => {
-                            for (i, (a, b)) in shape.iter().zip(other_shape.iter()).enumerate() {
-                                if i == dim {
-                                    continue;
-                                } else {
-                                    assert_eq!(a, b, "Shapes must match for concatenation");
-                                }
-                            }
-                            let mut new_shape = shape.clone();
-                            new_shape[dim] += other_shape[dim];
-                            let mut new_data = Vec::with_capacity(new_shape.iter().product());
-                            let outer_dim = shape[..dim].iter().product();
-                            let inner_dim = shape[dim + 1..].iter().product();
-                            let self_dim = shape[dim];
-                            let other_dim = other_shape[dim];
+                },
+            ) => {
+                let axis = dim.unwrap_or(0);
 
-                            for outer_dim in 0..outer_dim {
-                                let outer_offset = outer_dim * self_dim * inner_dim;
-                                for i in 0..self_dim {
-                                    let start = outer_offset + i * inner_dim;
-                                    for k in 0..inner_dim {
-                                        new_data.push(data[start + k])
-                                    }
-                                }
+                let left_array = data.data_f32();
+                let right_array = other_data.data_f32();
+                let result = ndarray::stack(Axis(axis), &[left_array.view(), right_array.view()])
+                    .expect("Arrays could not be concatenated");
 
-                                for i in 0..other_dim {
-                                    let start = outer_offset + i * inner_dim;
-                                    for k in 0..inner_dim {
-                                        new_data.push(other_data[start + k]);
-                                    }
-                                }
-                            }
-
-                            Tensor::from_op(
-                                new_data,
-                                new_shape,
-                                TensorOperation::Concat {
-                                    inputs: vec![id.clone(), other_id.clone()],
-                                    dim: Some(dim),
-                                },
-                            )
-                        }
-                    }
-                }
-                _ => panic!("Cannot concatenate tensors of different types (f32 vs f64)"),
-            },
-            _ => todo!(),
+                Tensor::from_op(
+                    result,
+                    TensorOperation::Concat {
+                        inputs: vec![id.clone(), other_id.clone()],
+                        dim,
+                    },
+                )
+            }
+            _ => panic!("Cannot concatenate tensors of different types"),
         }
     }
 }
 
 impl TensorData {
     fn new_f32(data: Vec<f32>, shape: Option<Vec<usize>>) -> Self {
-        let shape = match shape {
+        let array_data = match shape {
             Some(shape) => {
                 let expected_size = shape.iter().product::<usize>();
                 assert_eq!(
@@ -1061,17 +1015,16 @@ impl TensorData {
                     shape,
                     expected_size
                 );
-                shape
+                Array::from_shape_vec(IxDyn(&shape), data).unwrap()
             }
-            None => {
-                vec![data.len()]
-            }
+            None => Array::from_shape_vec(IxDyn(&[data.len()]), data).unwrap(),
         };
-        TensorData::F32 { data, shape }
+
+        TensorData::F32 { data: array_data }
     }
 
     fn new_f64(data: Vec<f64>, shape: Option<Vec<usize>>) -> Self {
-        let shape = match shape {
+        let array_data = match shape {
             Some(shape) => {
                 let expected_size = shape.iter().product::<usize>();
                 assert_eq!(
@@ -1082,14 +1035,12 @@ impl TensorData {
                     shape,
                     expected_size
                 );
-                shape
+                Array::from_shape_vec(IxDyn(&shape), data).unwrap()
             }
-            None => {
-                vec![data.len()]
-            }
+            None => Array::from_shape_vec(IxDyn(&[data.len()]), data).unwrap(),
         };
 
-        TensorData::F64 { data, shape }
+        TensorData::F64 { data: array_data }
     }
 
     fn with_shape_f32(data: Vec<f32>, shape: Vec<usize>) -> Self {
@@ -1108,7 +1059,28 @@ impl TensorData {
         Self::new_f64(data, None)
     }
 }
+fn can_broadcast(shape1: &[usize], shape2: &[usize]) -> bool {
+    let mut i1 = shape1.len();
+    let mut i2 = shape2.len();
 
+    while i1 > 0 || i2 > 0 {
+        let dim1 = if i1 > 0 { shape1[i1 - 1] } else { 1 };
+        let dim2 = if i2 > 0 { shape2[i2 - 1] } else { 1 };
+
+        if dim1 != dim2 && dim1 != 1 && dim2 != 1 {
+            return false;
+        }
+
+        if i1 > 0 {
+            i1 -= 1;
+        }
+        if i2 > 0 {
+            i2 -= 1;
+        }
+    }
+
+    true
+}
 macro_rules! impl_tensordata_op {
     ($trait:ident, $method:ident, $op:tt, $op_name:expr) => {
         impl $trait for &TensorData {
@@ -1117,31 +1089,80 @@ macro_rules! impl_tensordata_op {
             fn $method(self, other: &TensorData) -> TensorData {
                 match (self, other) {
                     (
-                        TensorData::F32 { data: data1, shape: shape1 },
-                        TensorData::F32 { data: data2, shape: shape2 },
+                        TensorData::F32 { data: data1 },
+                        TensorData::F32 { data: data2 },
                     ) => {
-                        if shape1 == shape2 {
+                        if data1.shape() == data2.shape() {
                             // Shapes match exactly - perform element-wise operation
-                            let new_data = data1.iter().zip(data2.iter()).map(|(a, b)| a $op b).collect();
-                            TensorData::with_shape_f32(new_data, shape1.clone())
-                        } else if shape1.len() == 1 && shape1[0] == 1 {
+                            let result = std::panic::catch_unwind(|| {
+                                data1 $op data2
+                            });
+
+                            match result {
+                                Ok(data) => TensorData::F32 { data },
+                                Err(_) => {
+                                    panic!("Operation '{}' failed with matching shapes:\n  - Shape: {:?}\n  - Left values: {:?}\n  - Right values: {:?}",
+                                           $op_name, data1.shape(),
+                                           if data1.len() <= 10 { format!("{:?}", data1) } else { format!("[{} elements]", data1.len()) },
+                                           if data2.len() <= 10 { format!("{:?}", data2) } else { format!("[{} elements]", data2.len()) })
+                                }
+                            }
+                        } else if data1.len() == 1 {
                             // Self is a scalar - broadcast to other's shape
-                            let scalar_value = data1[0];
-                            let new_data = data2.iter().map(|&b| scalar_value $op b).collect();
-                            TensorData::with_shape_f32(new_data, shape2.clone())
-                        } else if shape2.len() == 1 && shape2[0] == 1 {
+                            let scalar_value = data1.first().unwrap();
+                            let result = std::panic::catch_unwind(|| {
+                                *scalar_value $op data2
+                            });
+
+                            match result {
+                                Ok(data) => TensorData::F32 { data },
+                                Err(_) => {
+                                    panic!("Operation '{}' failed with scalar broadcast:\n  - Scalar: {:?}\n  - Shape: {:?}\n  - Right values: {:?}",
+                                           $op_name, scalar_value, data2.shape(),
+                                           if data2.len() <= 10 { format!("{:?}", data2) } else { format!("[{} elements]", data2.len()) })
+                                }
+                            }
+                        } else if data2.len() == 1 {
                             // Other is a scalar - broadcast to self's shape
-                            let scalar_value = data2[0];
-                            let new_data = data1.iter().map(|&a| a $op scalar_value).collect();
-                            TensorData::with_shape_f32(new_data, shape1.clone())
+                            let scalar_value = data2.first().unwrap();
+                            let result = std::panic::catch_unwind(|| {
+                                data1 $op *scalar_value
+                            });
+
+                            match result {
+                                Ok(data) => TensorData::F32 { data },
+                                Err(_) => {
+                                    panic!("Operation '{}' failed with scalar broadcast:\n  - Shape: {:?}\n  - Scalar: {:?}\n  - Left values: {:?}",
+                                           $op_name, data1.shape(), scalar_value,
+                                           if data1.len() <= 10 { format!("{:?}", data1) } else { format!("[{} elements]", data1.len()) })
+                                }
+                            }
                         } else {
-                            panic!("Cannot {} tensors of different shapes ({:?}D vs {:?}D)", $op_name, shape1.len(), shape2.len())
+                            let shape1 = data1.shape();
+                            let shape2 = data2.shape();
+                            if can_broadcast(shape1, shape2) {
+                                let result = std::panic::catch_unwind(|| {
+                                    data1 $op data2
+                                });
+
+                                match result {
+                                    Ok(data) => TensorData::F32 { data },
+                                    Err(_) => {
+                                        panic!("Operation '{}' failed during broadcasting:\n  - Left shape: {:?}\n  - Right shape: {:?}\n  - Left values: {:?}\n  - Right values: {:?}",
+                                               $op_name, shape1, shape2,
+                                               if data1.len() <= 10 { format!("{:?}", data1) } else { format!("[{} elements]", data1.len()) },
+                                               if data2.len() <= 10 { format!("{:?}", data2) } else { format!("[{} elements]", data2.len()) })
+                                    }
+                                }
+                            } else {
+                                panic!("Cannot {} tensors of different shapes, shape 1: {:?}, shape 2: {:?}",
+                                       $op_name, shape1, shape2)
+                            }
                         }
                     }
                     _ => panic!(concat!("Cannot ", $op_name, " tensor data of different types (f32 vs f64)")),
                 }
-
-        }
+            }
         }
 
         impl $trait for TensorData {
@@ -1157,13 +1178,11 @@ macro_rules! impl_tensordata_op {
 
             fn $method(self, scalar: f32) -> TensorData {
                 match self {
-                    TensorData::F32 { data, shape } => {
-                        let new_data = data.iter().map(|&x| x $op scalar).collect();
-                        TensorData::with_shape_f32(new_data, shape.clone())
+                    TensorData::F32 { data } => {
+                        TensorData::F32 { data: data.clone() $op scalar }
                     }
-                    TensorData::F64 { data, shape } => {
-                        let new_data = data.iter().map(|&x| x $op scalar as f64).collect();
-                        TensorData::with_shape_f64(new_data, shape.clone())
+                    TensorData::F64 { data } => {
+                        TensorData::F64 { data: data.clone() $op scalar as f64 }
                     }
                 }
             }
@@ -1174,13 +1193,11 @@ macro_rules! impl_tensordata_op {
 
             fn $method(self, scalar: f64) -> TensorData {
                 match self {
-                    TensorData::F32 { data, shape } => {
-                        let new_data = data.iter().map(|&x| x $op scalar as f32).collect();
-                        TensorData::with_shape_f32(new_data, shape.clone())
+                    TensorData::F32 { data } => {
+                        TensorData::F32 { data: data.clone() $op scalar as f32 }
                     }
-                    TensorData::F64 { data, shape } => {
-                        let new_data = data.iter().map(|&x| x $op scalar).collect();
-                        TensorData::with_shape_f64(new_data, shape.clone())
+                    TensorData::F64 { data } => {
+                        TensorData::F64 { data: data.clone() $op scalar }
                     }
                 }
             }
@@ -1207,13 +1224,11 @@ macro_rules! impl_tensordata_op {
 
             fn $method(self, tensor_data: &TensorData) -> TensorData {
                 match tensor_data {
-                    TensorData::F32 { data, shape } => {
-                        let new_data = data.iter().map(|&x| self $op x).collect();
-                        TensorData::with_shape_f32(new_data, shape.clone())
+                    TensorData::F32 { data } => {
+                        TensorData::F32 { data: self $op data.clone() }
                     }
-                    TensorData::F64 { data, shape } => {
-                        let new_data = data.iter().map(|&x| self as f64 $op x).collect();
-                        TensorData::with_shape_f64(new_data, shape.clone())
+                    TensorData::F64 { data } => {
+                        TensorData::F64 { data: self as f64 $op data.clone() }
                     }
                 }
             }
@@ -1224,13 +1239,11 @@ macro_rules! impl_tensordata_op {
 
             fn $method(self, tensor_data: &TensorData) -> TensorData {
                 match tensor_data {
-                    TensorData::F32 { data, shape } => {
-                        let new_data = data.iter().map(|&x| self as f32 $op x).collect();
-                        TensorData::with_shape_f32(new_data, shape.clone())
+                    TensorData::F32 { data } => {
+                        TensorData::F32 { data: self as f32 $op data.clone() }
                     }
-                    TensorData::F64 { data, shape } => {
-                        let new_data = data.iter().map(|&x| self $op x).collect();
-                        TensorData::with_shape_f64(new_data, shape.clone())
+                    TensorData::F64 { data } => {
+                        TensorData::F64 { data: self $op data.clone() }
                     }
                 }
             }
@@ -1274,31 +1287,15 @@ macro_rules! impl_tensor_op {
                         },
                     ) => {
                         let new_data = data1 $op data2;
-
                         Tensor::from_op(
                             new_data.data_f32().clone(),
-                            new_data.shape().clone(),
                             TensorOperation::$op_enum {
                                 left: id1.clone(),
                                 right: OperatorHandle::Tensor(id2.clone()),
                             }
                         )
                     }
-                    (
-                        Tensor::F64 {
-                            id: _,
-                            data: _,
-                            ..
-                        },
-                        Tensor::F64 {
-                            id: _,
-                            data: _,
-                            ..
-                        },
-                    ) => {
-                        todo!()
-                    }
-                    _ => panic!(concat!("Cannot ", $op_name, " tensors of different types (f32 vs f64)")),
+                    _ => panic!(concat!("Cannot ", $op_name, " tensors of different types")),
                 }
             }
         }
@@ -1310,27 +1307,23 @@ macro_rules! impl_tensor_op {
                 &self $op &other
             }
         }
+
         impl $trait<f32> for &Tensor {
             type Output = TensorHandle;
 
             fn $method(self, scalar: f32) -> TensorHandle {
                 match self {
                     Tensor::F32 { id, data, .. } => {
-                        // Use the TensorData operation
                         let new_data = data $op scalar;
-
                         Tensor::from_op(
                             new_data.data_f32().clone(),
-                            new_data.shape().clone(),
                             TensorOperation::$op_enum {
                                 left: id.clone(),
                                 right: OperatorHandle::Scalar(scalar),
                             }
                         )
                     }
-                    Tensor::F64 {   .. } => {
-                        todo!()
-                    }
+                    Tensor::F64 { .. } => todo!(),
                 }
             }
         }
@@ -1342,19 +1335,15 @@ macro_rules! impl_tensor_op {
                 match self {
                     Tensor::F32 { id, data, .. } => {
                         let new_data = data $op scalar;
-
                         Tensor::from_op(
                             new_data.data_f32().clone(),
-                            new_data.shape().clone(),
                             TensorOperation::$op_enum {
                                 left: id.clone(),
                                 right: OperatorHandle::Scalar(scalar as f32),
                             }
                         )
                     }
-                    Tensor::F64 {   .. } => {
-                        todo!()
-                    }
+                    Tensor::F64 { .. } => todo!(),
                 }
             }
         }
@@ -1384,16 +1373,13 @@ macro_rules! impl_tensor_op {
                         let new_data = self $op data;
                         Tensor::from_op(
                             new_data.data_f32().clone(),
-                            new_data.shape().clone(),
                             TensorOperation::$op_enum {
                                 left: id.clone(),
                                 right: OperatorHandle::Scalar(self),
                             }
                         )
                     }
-                    Tensor::F64 {  .. } => {
-                        todo!()
-                    }
+                    Tensor::F64 { .. } => todo!(),
                 }
             }
         }
@@ -1405,19 +1391,15 @@ macro_rules! impl_tensor_op {
                 match tensor {
                     Tensor::F32 { id, data, .. } => {
                         let new_data = self $op data;
-
                         Tensor::from_op(
                             new_data.data_f32().clone(),
-                            new_data.shape().clone(),
                             TensorOperation::$op_enum {
                                 left: id.clone(),
                                 right: OperatorHandle::Scalar(self as f32),
                             }
                         )
                     }
-                    Tensor::F64 {  .. } => {
-                        todo!()
-                    }
+                    Tensor::F64 { .. } => todo!(),
                 }
             }
         }
@@ -1439,6 +1421,7 @@ macro_rules! impl_tensor_op {
         }
     };
 }
+
 macro_rules! impl_tensorhandle_op {
     ($trait:ident, $method:ident, $op:tt, $op_name:expr, $op_enum:ident) => {
         impl $trait for &TensorHandle {
@@ -1536,16 +1519,19 @@ macro_rules! impl_tensorhandle_op {
         }
     };
 }
+
 impl TensorHandle {
     pub fn concat(&self, other: &TensorHandle, dim: Option<usize>) -> TensorHandle {
         let tensor1 = get_tensor(self.clone()).unwrap();
         let tensor2 = get_tensor(other.clone()).unwrap();
         tensor1.concat(&tensor2, dim)
     }
+
     pub fn sum(&self) -> TensorHandle {
         let tensor = get_tensor(self.clone()).unwrap();
         tensor.sum()
     }
+
     pub fn mse(&self, target: &TensorHandle) -> TensorHandle {
         let diff = self - target;
         let squared = diff * diff;
@@ -1557,28 +1543,43 @@ impl TensorHandle {
             .product::<usize>() as f32;
         sum_squared / n
     }
-    // todo reimplement with a reshape
+
     pub fn flatten(&self) -> TensorHandle {
         let tensor = get_tensor(self.clone()).unwrap();
-        let shape = tensor.shape();
-        let size = shape.iter().product::<usize>();
-        let new_shape = vec![size];
-        let data = tensor.data_f32().clone();
-        Tensor::from_op(data, new_shape, TensorOperation::None)
+
+        match tensor {
+            Tensor::F32 {
+                data: ref tensor_data,
+                ..
+            } => {
+                let size = tensor_data.size();
+                let flattened = tensor_data
+                    .data_f32()
+                    .clone()
+                    .into_shape(IxDyn(&[size]))
+                    .unwrap();
+                Tensor::from_op(flattened, TensorOperation::None)
+            }
+            _ => todo!(),
+        }
     }
+
     pub fn abs(&self) -> TensorHandle {
         let tensor = get_tensor(self.clone()).unwrap();
         tensor.abs()
     }
+
     pub fn relu(&self) -> TensorHandle {
         let tensor = get_tensor(self.clone()).unwrap();
         tensor.max(0.0)
     }
+
     pub fn backward(&self) {
         let tensor = get_tensor(self.clone()).unwrap();
         tensor.backward();
     }
 }
+
 impl_tensordata_op!(Add, add, +, "add");
 impl_tensordata_op!(Sub, sub, -, "subtract");
 impl_tensordata_op!(Mul, mul, *, "multiply");
