@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use ndarray::{Array, ArrayD, Axis, Dimension, IxDyn};
-use std::fmt::Debug;
+use std::fmt::{self, Debug};
 use std::{
     cell::{RefCell, RefMut},
     collections::VecDeque,
@@ -200,6 +200,11 @@ pub enum TensorOperation {
     },
     Log {
         input: TensorHandle,
+    },
+    // we use this op because we use ndarray for mat mul so it doesnt use our binary ops to autograd
+    MatMul {
+        input: TensorHandle,
+        weights: TensorHandle,
     },
     None,
 }
@@ -771,6 +776,9 @@ impl Tensor {
                         });
                     }
                 }
+                TensorOperation::MatMul { input, weights } => {
+                    todo!("Implement MatMul backward pass")
+                }
                 TensorOperation::Abs {
                     input,
                     forward_positive,
@@ -930,7 +938,7 @@ impl Tensor {
                             Tensor::F32 { grad, data, .. } => {
                                 let input_data = data.data_f32();
                                 let new_grad = TensorData::F32 {
-                                    data: prev_grad.data_f32() / input_data, 
+                                    data: prev_grad.data_f32() / input_data,
                                 };
                                 match grad {
                                     Some(existing_grad) => {
@@ -1688,7 +1696,126 @@ impl TensorHandle {
         tensor.backward();
     }
 }
+impl fmt::Display for TensorHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match get_tensor(*self) {
+            Some(tensor) => write!(f, "{}", format_tensor(&tensor)),
+            None => write!(f, "Tensor({:?}): <not found>", self),
+        }
+    }
+}
+pub fn format_tensor(tensor: &Tensor) -> String {
+    match tensor {
+        Tensor::F32 {
+            id,
+            data,
+            grad,
+            requires_grad,
+            ..
+        } => {
+            let grad_str = match grad {
+                Some(g) => format!("\ngrad: {}", tensor_data_to_string(g)),
+                None => "".to_string(),
+            };
 
+            format!(
+                "Tensor({:?}) [requires_grad={}]:\n{}{}",
+                id,
+                requires_grad,
+                tensor_data_to_string(data),
+                grad_str
+            )
+        }
+        Tensor::F64 { id, data, grad, .. } => {
+            let grad_str = match grad {
+                Some(g) => format!("\ngrad: {}", tensor_data_to_string(g)),
+                None => "".to_string(),
+            };
+
+            format!(
+                "Tensor({:?}):\n{}{}",
+                id,
+                tensor_data_to_string(data),
+                grad_str
+            )
+        }
+    }
+}
+fn tensor_data_to_string(data: &TensorData) -> String {
+    match data {
+        TensorData::F32 { data } => {
+            let shape = data.shape();
+            let total_elements = data.len();
+
+            if total_elements <= 100 {
+                if shape.len() == 1 {
+                    format!(
+                        "shape: {:?}, data: {:?}",
+                        shape,
+                        data.as_slice().unwrap_or(&[])
+                    )
+                } else if shape.len() == 2 {
+                    let mut result = format!("shape: {:?}\n", shape);
+                    for i in 0..shape[0] {
+                        let row: Vec<_> = (0..shape[1])
+                            .map(|j| format!("{:.6}", data[[i, j]]))
+                            .collect();
+                        result.push_str(&format!("  [{}]\n", row.join(", ")));
+                    }
+                    result
+                } else {
+                    format!("shape: {:?}, data: {:?}", shape, data)
+                }
+            } else {
+                // For large tensors, show shape and sample values
+                format!(
+                    "shape: {:?}, size: {}, sample: [{:.6}, {:.6}, ... {:.6}, {:.6}]",
+                    shape,
+                    total_elements,
+                    data.as_slice().unwrap_or(&[])[0],
+                    data.as_slice().unwrap_or(&[])[1],
+                    data.as_slice().unwrap_or(&[])[total_elements - 2],
+                    data.as_slice().unwrap_or(&[])[total_elements - 1]
+                )
+            }
+        }
+        TensorData::F64 { data } => {
+            let shape = data.shape();
+            let total_elements = data.len();
+
+            if total_elements <= 100 {
+                if shape.len() == 1 {
+                    format!(
+                        "shape: {:?}, data: {:?}",
+                        shape,
+                        data.as_slice().unwrap_or(&[])
+                    )
+                } else if shape.len() == 2 {
+                    let mut result = format!("shape: {:?}\n", shape);
+                    for i in 0..shape[0] {
+                        let row: Vec<_> = (0..shape[1])
+                            .map(|j| format!("{:.6}", data[[i, j]]))
+                            .collect();
+                        result.push_str(&format!("  [{}]\n", row.join(", ")));
+                    }
+                    result
+                } else {
+                    format!("shape: {:?}, data: {:?}", shape, data)
+                }
+            } else {
+                format!(
+                    "shape: {:?}, size: {}, sample: [{:.6}, {:.6}, ... {:.6}, {:.6}]",
+                    shape,
+                    total_elements,
+                    data.as_slice().unwrap_or(&[])[0],
+                    data.as_slice().unwrap_or(&[])[1],
+                    data.as_slice().unwrap_or(&[])[total_elements - 2],
+                    data.as_slice().unwrap_or(&[])[total_elements - 1]
+                )
+            }
+        }
+    }
+}
 impl_tensordata_op!(Add, add, +, "add");
 impl_tensordata_op!(Sub, sub, -, "subtract");
 impl_tensordata_op!(Mul, mul, *, "multiply");

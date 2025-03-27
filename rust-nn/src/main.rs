@@ -37,7 +37,7 @@ impl LinearLayer {
                 .into_dimensionality::<ndarray::Ix1>()
                 .unwrap();
 
-            let mut y_vec = ndarray::Array1::zeros(a_mat_t.shape()[0]); // todo use Tensor / tensordata to cache alloc
+            let mut y_vec = ndarray::Array1::zeros(a_mat_t.shape()[0]);
             ndarray::linalg::general_mat_vec_mul(1.0, &a_mat_t, &x_vec, 0.0, &mut y_vec);
 
             y_vec.into_dyn()
@@ -50,13 +50,21 @@ impl LinearLayer {
                 .view()
                 .into_dimensionality::<ndarray::Ix2>()
                 .unwrap();
-
-            let mut c_mat = ndarray::Array2::zeros((a_mat.shape()[0], b_mat.shape()[1])); // todo use Tensor / tensordata to cache alloc
+            // fix this is reallocating every loop
+            let mut c_mat = ndarray::Array2::zeros((a_mat.shape()[0], b_mat.shape()[1]));
             ndarray::linalg::general_mat_mul(1.0, &a_mat, &b_mat, 0.0, &mut c_mat);
             c_mat.into_dyn()
         };
-        let result_handle = Tensor::from_op(result, TensorOperation::None);
 
+        let result_handle = Tensor::from_op(
+            result.clone(),
+            TensorOperation::MatMul {
+                input: input.clone(),
+                weights: self.weights,
+            },
+        );
+
+        // Add bias
         result_handle + self.bias
     }
 }
