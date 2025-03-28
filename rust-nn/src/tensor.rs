@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+use core::panic;
+use flate2::write;
 use ndarray::{Array, ArrayD, Axis, Dimension, IxDyn};
 use std::fmt::{self, Debug};
 use std::{
@@ -300,12 +302,14 @@ impl Debug for Tensor {
                 data,
                 graph,
                 grad,
+                requires_grad,
                 ..
             } => {
                 write!(f, "Tensor::F32 {:?}{{\n", id)?;
                 write!(f, "  data: {:?}\n", data.data_f32())?;
                 write!(f, "  graph: {:?}\n", graph)?;
-                write!(f, "  grad: {:?}\n}}", grad)
+                write!(f, "  grad: {:?}\n", grad)?;
+                write!(f, "  requires_grad: {:?}\n}}", requires_grad)
             }
             _ => todo!(),
         }
@@ -384,36 +388,41 @@ impl Tensor {
             let mut ctx_ref = ctx.borrow_mut();
             let tensor_data = TensorData::F32 { data };
 
-            if ctx_ref.tensor_cache.current_op_index < ctx_ref.tensor_cache.op_result_pointers.len()
-            {
-                let cache = &mut ctx_ref.tensor_cache;
-                let handle = cache.op_result_pointers[cache.current_op_index];
-                cache.current_op_index += 1;
+            // if ctx_ref.tensor_cache.current_op_index < ctx_ref.tensor_cache.op_result_pointers.len()
+            // {
+            //     let cache = &mut ctx_ref.tensor_cache;
+            //     let handle = cache.op_result_pointers[cache.current_op_index];
+            //     println!("Using cached tensor handle: {:?}", handle);
+            //     cache.current_op_index += 1;
 
-                with_mut_tensor_ctx(&mut ctx_ref, handle, |tensor| match tensor {
-                    Tensor::F32 {
-                        ref mut data,
-                        ref mut graph,
-                        ref mut grad,
-                        ..
-                    } => {
-                        *data = tensor_data;
-                        *graph = op;
-                        *grad = None;
-                    }
-                    _ => panic!("Expected F32 tensor"),
-                });
+            //     with_mut_tensor_ctx(&mut ctx_ref, handle, |tensor| match tensor {
+            //         Tensor::F32 {
+            //             ref mut data,
+            //             ref mut graph,
+            //             ref mut grad,
+            //             ref mut requires_grad,
+            //             ..
+            //         } => {
+            //             *data = tensor_data;
+            //             *graph = op;
+            //             *grad = None;
+            //             *requires_grad = true;
+            //         }
+            //         _ => panic!("Expected F32 tensor"),
+            //     });
 
-                handle
-            } else {
+            //     handle
+            // } else {
+                println!("Creating new tensor from op: {:?}", op);
                 let tensor =
                     Self::create_or_update_tensor(Some(&ctx_ref), None, tensor_data, op, true);
+                println!("Created new tensor: {:?}", tensor);
                 let handle = TensorHandle(ctx_ref.register_tensor(tensor));
                 let cache = &mut ctx_ref.tensor_cache;
                 cache.op_result_pointers.push(handle);
                 cache.current_op_index += 1;
                 handle
-            }
+            // }
         })
     }
 
@@ -425,45 +434,47 @@ impl Tensor {
         requires_grad: bool,
     ) -> Tensor {
         match id_handle {
-            Some(handle) => match ctx {
-                Some(ctx) => {
-                    let mut existing = get_tensor_with_ctx(ctx, handle).unwrap();
-                    match existing {
-                        Tensor::F32 {
-                            id: _,
-                            ref mut data,
-                            ref mut graph,
-                            ref mut grad,
-                            requires_grad: _,
-                        } => {
-                            *data = tensor_data;
-                            *graph = op;
-                            *grad = None;
-                            existing
-                        }
-                        _ => panic!("Expected F32 tensor"),
-                    }
-                }
-                None => {
-                    let mut existing = get_tensor(handle).unwrap();
-                    match existing {
-                        Tensor::F32 {
-                            id: _,
-                            ref mut data,
-                            ref mut graph,
-                            ref mut grad,
-                            requires_grad: _,
-                        } => {
-                            *data = tensor_data;
-                            *graph = op;
-                            *grad = None;
-                            existing
-                        }
-                        _ => panic!("Expected F32 tensor"),
-                    }
-                }
-            },
-            None => {
+            // Some(handle) => match ctx {
+            //     Some(ctx) => {
+            //         let mut existing = get_tensor_with_ctx(ctx, handle).unwrap();
+            //         match existing {
+            //             Tensor::F32 {
+            //                 id: _,
+            //                 ref mut data,
+            //                 ref mut graph,
+            //                 ref mut grad,
+            //                 requires_grad: ref mut r,
+            //             } => {
+            //                 *data = tensor_data;
+            //                 *graph = op;
+            //                 *grad = None;
+            //                 *r = requires_grad;
+            //                 existing
+            //             }
+            //             _ => panic!("Expected F32 tensor"),
+            //         }
+            //     }
+            //     None => {
+            //         let mut existing = get_tensor(handle).unwrap();
+            //         match existing {
+            //             Tensor::F32 {
+            //                 id: _,
+            //                 ref mut data,
+            //                 ref mut graph,
+            //                 ref mut grad,
+            //                 requires_grad: ref mut r,
+            //             } => {
+            //                 *data = tensor_data;
+            //                 *graph = op;
+            //                 *grad = None;
+            //                 *r = requires_grad;
+            //                 existing
+            //             }
+            //             _ => panic!("Expected F32 tensor"),
+            //         }
+            //     }
+            // },
+            _ => {
                 let next_id = match ctx {
                     Some(ctx) => get_next_tensor_id_with_ctx(ctx),
                     None => get_next_tensor_id(),
@@ -526,7 +537,6 @@ impl Tensor {
 
                         match tensor {
                             Tensor::F32 { grad, data, .. } => {
-                                let shape = data.shape();
                                 let mut new_grad = prev_grad.clone();
 
                                 match grad {
@@ -777,7 +787,193 @@ impl Tensor {
                     }
                 }
                 TensorOperation::MatMul { input, weights } => {
-                    todo!("Implement MatMul backward pass")
+                    let weights_tensor = get_tensor(weights).unwrap();
+                    // handle input tensor grad
+                    with_mut_tensor(input, |tensor| {
+                        if !tensor.requires_grad() {
+                            return;
+                        }
+                        match tensor {
+                            Tensor::F32 { grad, .. } => {
+                                let weights_data = weights_tensor.data_f32();
+                                let prev_grad_data = prev_grad.data_f32();
+
+                                // For input gradient: dL/dY · W^T
+                                // We need to ensure dimensions align correctly
+
+                                // Create result based on dimensions
+                                let result = match (prev_grad_data.ndim(), weights_data.ndim()) {
+                                    (2, 2) => {
+                                        // If both are 2D matrices, use standard matrix multiplication with transposed weights
+                                        let p = prev_grad_data
+                                            .clone()
+                                            .into_dimensionality::<ndarray::Ix2>()
+                                            .unwrap();
+                                        let w = weights_data
+                                            .clone()
+                                            .into_dimensionality::<ndarray::Ix2>()
+                                            .unwrap();
+                                        let w = w.t();
+
+                                        p.dot(&w).into_dyn()
+                                    }
+                                    (1, 2) => {
+                                        // If prev_grad is vector and weights is matrix
+                                        let p = prev_grad_data
+                                            .clone()
+                                            .into_dimensionality::<ndarray::Ix1>()
+                                            .unwrap();
+                                        let w = weights_data
+                                            .clone()
+                                            .into_dimensionality::<ndarray::Ix2>()
+                                            .unwrap();
+                                        let w = w.t();
+
+                                        p.dot(&w).into_dyn()
+                                    }
+                                    _ => {
+                                        panic!(
+                                            "Unsupported tensor dimensions for matmul: {} and {}",
+                                            prev_grad_data.ndim(),
+                                            weights_data.ndim()
+                                        );
+                                    }
+                                };
+
+                                // Ensure the result has the expected shape
+                                let mut new_grad = TensorData::F32 { data: result };
+                                println!(
+                                    "Computed new grad shape: {:?} tensor {:?}",
+                                    new_grad.shape(),
+                                    input
+                                );
+
+                                match grad {
+                                    Some(existing_grad) => {
+                                        println!(
+                                            "Existing grad shape: {:?} tensor {:?}",
+                                            existing_grad.shape(),
+                                            input
+                                        );
+                                        new_grad = new_grad + existing_grad.clone();
+                                    }
+                                    None => {}
+                                }
+
+                                *grad = Some(new_grad.clone());
+                                if tensor.requires_grad() {
+                                    queue.push_back((tensor.graph(), new_grad));
+                                }
+                            }
+                            _ => todo!(),
+                        }
+                    });
+                    // handle weights tensor grad
+                    let input_tensor = get_tensor(input).unwrap();
+                    with_mut_tensor(weights, |tensor| {
+                        if !tensor.requires_grad() {
+                            return;
+                        }
+                        match tensor {
+                            Tensor::F32 { grad, .. } => {
+                                let input_data = input_tensor.data_f32();
+                                let prev_grad_data = prev_grad.data_f32();
+
+                                // Calculate gradient using dot product for matrix multiplication
+                                // X^T * dL/dY
+                                let result = match (input_data.ndim(), prev_grad_data.ndim()) {
+                                    (2, 2) => {
+                                        // Normal matrix multiplication case
+                                        let x_t = input_data
+                                            .t()
+                                            .clone()
+                                            .into_dimensionality::<ndarray::Ix2>()
+                                            .unwrap();
+                                        let dy = prev_grad_data
+                                            .clone()
+                                            .into_dimensionality::<ndarray::Ix2>()
+                                            .unwrap();
+                                        x_t.dot(&dy).into_dyn()
+                                    }
+                                    (1, 1) => {
+                                        // For single vectors, reshape to proper dimensions
+                                        // Convert x (input) to a column vector (n×1) by reshaping
+                                        // Convert dL/dY to a row vector (1×m) by reshaping
+                                        let x = input_data
+                                            .clone()
+                                            .into_dimensionality::<ndarray::Ix1>()
+                                            .unwrap();
+                                        let dy = prev_grad_data
+                                            .clone()
+                                            .into_dimensionality::<ndarray::Ix1>()
+                                            .unwrap();
+
+                                        // Convert to 2D arrays with proper shapes
+                                        let x_col = x.insert_axis(ndarray::Axis(1)); // Make n×1 column vector
+                                        let dy_row = dy.insert_axis(ndarray::Axis(0)); // Make 1×m row vector
+
+                                        // Matrix multiply: (n×1) × (1×m) = n×m matrix
+                                        x_col.dot(&dy_row).into_dyn()
+                                    }
+                                    (1, 2) => {
+                                        // Vector × Matrix case
+                                        let x = input_data
+                                            .clone()
+                                            .into_dimensionality::<ndarray::Ix1>()
+                                            .unwrap();
+                                        let dy = prev_grad_data
+                                            .clone()
+                                            .into_dimensionality::<ndarray::Ix2>()
+                                            .unwrap();
+
+                                        // Convert vector to column vector
+                                        let x_col = x.insert_axis(ndarray::Axis(1));
+
+                                        // Matrix multiply: (n×1) × (b×m) = n×m matrix
+                                        x_col.dot(&dy).into_dyn()
+                                    }
+                                    (2, 1) => {
+                                        // Matrix × Vector case
+                                        let x_t = input_data
+                                            .t()
+                                            .clone()
+                                            .into_dimensionality::<ndarray::Ix2>()
+                                            .unwrap();
+                                        let dy = prev_grad_data
+                                            .clone()
+                                            .into_dimensionality::<ndarray::Ix1>()
+                                            .unwrap();
+
+                                        // Convert gradient to row vector
+                                        let dy_row = dy.insert_axis(ndarray::Axis(0));
+
+                                        // Matrix multiply: (m×b) × (1×n) = m×n matrix
+                                        x_t.dot(&dy_row).into_dyn()
+                                    }
+                                    _ => {
+                                        panic!(
+                                            "Unsupported tensor dimensions for weight gradient: {} and {}",
+                                            input_data.ndim(),
+                                            prev_grad_data.ndim()
+                                        );
+                                    }
+                                };
+
+                                let mut new_grad = TensorData::F32 { data: result };
+                                match grad {
+                                    Some(existing_grad) => {
+                                        new_grad = new_grad + existing_grad.clone();
+                                    }
+                                    None => {}
+                                }
+                                *grad = Some(new_grad.clone());
+                                if tensor.requires_grad() {
+                                    queue.push_back((tensor.graph(), new_grad));
+                                }
+                            }
+                            _ => todo!(),
+                        }
+                    });
                 }
                 TensorOperation::Abs {
                     input,
