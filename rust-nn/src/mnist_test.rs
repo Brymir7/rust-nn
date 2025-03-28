@@ -112,10 +112,6 @@ pub fn run_mnist_training() {
 
     let mut indices: Vec<usize> = (0..train_dataset.len()).collect();
 
-    TENSOR_CONTEXT.with_borrow_mut(|ctx| {
-        ctx.tensor_cache.start_op_index = ctx.tensor_cache.op_result_pointers.len();
-    });
-
     println!("Starting training for {} epochs...", num_epochs);
     let start_time = Instant::now();
 
@@ -124,7 +120,9 @@ pub fn run_mnist_training() {
         let data = t.data_f32();
         Tensor::with_shape_f32(data.iter().map(|&x| x).collect(), vec![t.shape()[1]], true)
     };
-
+    TENSOR_CONTEXT.with_borrow_mut(|ctx| {
+        ctx.tensor_cache.start_op_index = ctx.tensor_cache.op_result_pointers.len();
+    });
     for epoch in 0..num_epochs {
         indices.shuffle(&mut rng);
 
@@ -133,109 +131,33 @@ pub fn run_mnist_training() {
         let mut total_predictions = 0;
 
         for (i, &idx) in indices.iter().enumerate() {
-            // Get a single example
-            let single_index = &[idx];
-            let (batch_image, batch_label) = train_dataset.get_batch(single_index);
-
-            // Convert to 1D tensor (no batch dimension)
-            let image = flatten_batch(&batch_image);
-            let label = batch_label[0];
-
-            // Debug input data
-            println!("\n=== TRAINING EXAMPLE ===");
-            println!(
-                "Input image shape: {:?}",
-                get_tensor(image).unwrap().shape()
-            );
-            println!("Label: {}", label);
-
             optimizer.zero_grad(&params);
             optimizer.prepare_next_iteration();
 
-            // Forward pass with debug info
-            println!("\n--- FORWARD PASS ---");
-            let hidden1 = fc1.forward(&image);
-            println!(
-                "FC1 output shape: {:?}",
-                get_tensor(hidden1).unwrap().shape()
-            );
-
-            let hidden1_activated = hidden1.relu();
-            println!(
-                "ReLU activation shape: {:?}",
-                get_tensor(hidden1_activated).unwrap().shape()
-            );
-
-            let output = fc2.forward(&hidden1_activated);
-            println!(
-                "FC2 output shape: {:?}",
-                get_tensor(output).unwrap().shape()
-            );
-
-            // Create target as a 1D tensor
+            let single_index = &[idx];
+            let (batch_image, batch_label) = train_dataset.get_batch(single_index);
+            let image = flatten_batch(&batch_image);
+            let label = batch_label[0];
             let mut target_data = vec![0.0; num_classes];
             target_data[label as usize] = 1.0;
             let target = Tensor::with_shape_f32(target_data, vec![num_classes], false);
 
-            // Debug print for target and prediction
-            println!("\n--- NETWORK OUTPUT ---");
-            println!("Target: {}", target);
-            println!("Output: {}", output);
-
+            let hidden1 = fc1.forward(&image);
+            let hidden1_activated = hidden1.relu();
+            let output = fc2.forward(&hidden1_activated);
             let loss = output.mse(&target);
-            println!("Loss: {}", loss);
-
-            // Print computation graph BEFORE backprop
-            println!("\n--- COMPUTATION GRAPH ---");
-            print_computation_graph(loss, &mut HashSet::new(), 0);
-
-            println!("\n--- BACKWARD PASS ---");
+            // print_computation_graph(loss, &mut HashSet::new(), 0);
             loss.backward();
 
-            // Debug statistics for gradients BEFORE optimization step
-            println!("\n--- GRADIENTS AFTER BACKWARD PASS ---");
-            print_gradient_stats("FC1 weights", fc1.weights);
-            print_gradient_stats("FC1 bias", fc1.bias);
-            print_gradient_stats("FC2 weights", fc2.weights);
-            print_gradient_stats("FC2 bias", fc2.bias);
-
-            // Debug sample of actual weight values before update
-            println!("\n--- WEIGHT SAMPLES BEFORE UPDATE ---");
-            print_weight_samples("FC1 weights", fc1.weights, 5);
-            print_weight_samples("FC2 weights", fc2.weights, 5);
-
             optimizer.step(&params);
-
-            // Debug statistics for gradients AFTER optimization step (should be zeroed by optimizer.step)
-            println!("\n--- PARAMETERS AFTER UPDATE ---");
-            print_gradient_stats("FC1 weights", fc1.weights);
-            print_gradient_stats("FC1 bias", fc1.bias);
-            print_gradient_stats("FC2 weights", fc2.weights);
-            print_gradient_stats("FC2 bias", fc2.bias);
-
-            // Debug sample of updated weight values
-            println!("\n--- WEIGHT SAMPLES AFTER UPDATE ---");
-            print_weight_samples("FC1 weights", fc1.weights, 5);
-            print_weight_samples("FC2 weights", fc2.weights, 5);
-
-            // Check weight update magnitude
-            println!("\n--- PARAMETER UPDATE CHECKS ---");
-            check_parameter_updates("FC1 weights", fc1.weights, learning_rate);
-            check_parameter_updates("FC1 bias", fc1.bias, learning_rate);
-            check_parameter_updates("FC2 weights", fc2.weights, learning_rate);
-            check_parameter_updates("FC2 bias", fc2.bias, learning_rate);
-
-            return; // Keeping your existing return for initial debugging
 
             let loss_val = get_tensor(loss).unwrap().data_f32()[0];
             epoch_loss += loss_val;
 
-            // Print loss every 100 samples
             if i % 100 == 0 {
                 println!("Epoch {}, Sample {}: Loss = {:.6}", epoch + 1, i, loss_val);
             }
 
-            // Predict from 1D output
             let output_data = get_tensor(output).unwrap();
             let output_data = output_data.data_f32();
             let mut max_idx = 0;
@@ -264,7 +186,6 @@ pub fn run_mnist_training() {
             train_accuracy
         );
 
-        // Need to adapt evaluation function for 1D tensors
         evaluate_model_1d(&fc1, &fc2, &test_dataset, &flatten_batch);
     }
 
@@ -395,7 +316,7 @@ fn print_computation_graph(handle: TensorHandle, visited: &mut HashSet<usize>, i
             print_computation_graph(input, visited, indent + 4);
         }
         _ => {
-           println!("otrher op {:?}", tensor.graph());
+            println!("otrher op {:?}", tensor.graph());
         }
     }
 }

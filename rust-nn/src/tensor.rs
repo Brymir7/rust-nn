@@ -333,7 +333,7 @@ impl Tensor {
             }
             None => Array::from_shape_vec(IxDyn(&[data.len()]), data).unwrap(),
         };
-
+        // check storage to avoid reallocating every loop
         TENSOR_CONTEXT.with(|ctx| {
             let mut ctx_ref = ctx.borrow_mut();
             let tensor_data = TensorData::F32 { data: array_data };
@@ -388,41 +388,38 @@ impl Tensor {
             let mut ctx_ref = ctx.borrow_mut();
             let tensor_data = TensorData::F32 { data };
 
-            // if ctx_ref.tensor_cache.current_op_index < ctx_ref.tensor_cache.op_result_pointers.len()
-            // {
-            //     let cache = &mut ctx_ref.tensor_cache;
-            //     let handle = cache.op_result_pointers[cache.current_op_index];
-            //     println!("Using cached tensor handle: {:?}", handle);
-            //     cache.current_op_index += 1;
+            if ctx_ref.tensor_cache.current_op_index < ctx_ref.tensor_cache.op_result_pointers.len()
+            {
+                let cache = &mut ctx_ref.tensor_cache;
+                let handle = cache.op_result_pointers[cache.current_op_index];
+                cache.current_op_index += 1;
 
-            //     with_mut_tensor_ctx(&mut ctx_ref, handle, |tensor| match tensor {
-            //         Tensor::F32 {
-            //             ref mut data,
-            //             ref mut graph,
-            //             ref mut grad,
-            //             ref mut requires_grad,
-            //             ..
-            //         } => {
-            //             *data = tensor_data;
-            //             *graph = op;
-            //             *grad = None;
-            //             *requires_grad = true;
-            //         }
-            //         _ => panic!("Expected F32 tensor"),
-            //     });
+                with_mut_tensor_ctx(&mut ctx_ref, handle, |tensor| match tensor {
+                    Tensor::F32 {
+                        ref mut data,
+                        ref mut graph,
+                        ref mut grad,
+                        ref mut requires_grad,
+                        ..
+                    } => {
+                        *data = tensor_data;
+                        *graph = op;
+                        *grad = None;
+                        *requires_grad = true;
+                    }
+                    _ => panic!("Expected F32 tensor"),
+                });
 
-            //     handle
-            // } else {
-                println!("Creating new tensor from op: {:?}", op);
+                handle
+            } else {
                 let tensor =
                     Self::create_or_update_tensor(Some(&ctx_ref), None, tensor_data, op, true);
-                println!("Created new tensor: {:?}", tensor);
                 let handle = TensorHandle(ctx_ref.register_tensor(tensor));
                 let cache = &mut ctx_ref.tensor_cache;
                 cache.op_result_pointers.push(handle);
                 cache.current_op_index += 1;
                 handle
-            // }
+            }
         })
     }
 
@@ -434,47 +431,47 @@ impl Tensor {
         requires_grad: bool,
     ) -> Tensor {
         match id_handle {
-            // Some(handle) => match ctx {
-            //     Some(ctx) => {
-            //         let mut existing = get_tensor_with_ctx(ctx, handle).unwrap();
-            //         match existing {
-            //             Tensor::F32 {
-            //                 id: _,
-            //                 ref mut data,
-            //                 ref mut graph,
-            //                 ref mut grad,
-            //                 requires_grad: ref mut r,
-            //             } => {
-            //                 *data = tensor_data;
-            //                 *graph = op;
-            //                 *grad = None;
-            //                 *r = requires_grad;
-            //                 existing
-            //             }
-            //             _ => panic!("Expected F32 tensor"),
-            //         }
-            //     }
-            //     None => {
-            //         let mut existing = get_tensor(handle).unwrap();
-            //         match existing {
-            //             Tensor::F32 {
-            //                 id: _,
-            //                 ref mut data,
-            //                 ref mut graph,
-            //                 ref mut grad,
-            //                 requires_grad: ref mut r,
-            //             } => {
-            //                 *data = tensor_data;
-            //                 *graph = op;
-            //                 *grad = None;
-            //                 *r = requires_grad;
-            //                 existing
-            //             }
-            //             _ => panic!("Expected F32 tensor"),
-            //         }
-            //     }
-            // },
-            _ => {
+            Some(handle) => match ctx {
+                Some(ctx) => {
+                    let mut existing = get_tensor_with_ctx(ctx, handle).unwrap();
+                    match existing {
+                        Tensor::F32 {
+                            id: _,
+                            ref mut data,
+                            ref mut graph,
+                            ref mut grad,
+                            requires_grad: ref mut r,
+                        } => {
+                            *data = tensor_data;
+                            *graph = op;
+                            *grad = None;
+                            *r = requires_grad;
+                            existing
+                        }
+                        _ => panic!("Expected F32 tensor"),
+                    }
+                }
+                None => {
+                    let mut existing = get_tensor(handle).unwrap();
+                    match existing {
+                        Tensor::F32 {
+                            id: _,
+                            ref mut data,
+                            ref mut graph,
+                            ref mut grad,
+                            requires_grad: ref mut r,
+                        } => {
+                            *data = tensor_data;
+                            *graph = op;
+                            *grad = None;
+                            *r = requires_grad;
+                            existing
+                        }
+                        _ => panic!("Expected F32 tensor"),
+                    }
+                }
+            },
+            None => {
                 let next_id = match ctx {
                     Some(ctx) => get_next_tensor_id_with_ctx(ctx),
                     None => get_next_tensor_id(),
@@ -840,13 +837,7 @@ impl Tensor {
                                     }
                                 };
 
-                                // Ensure the result has the expected shape
                                 let mut new_grad = TensorData::F32 { data: result };
-                                println!(
-                                    "Computed new grad shape: {:?} tensor {:?}",
-                                    new_grad.shape(),
-                                    input
-                                );
 
                                 match grad {
                                     Some(existing_grad) => {
