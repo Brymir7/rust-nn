@@ -80,7 +80,7 @@ pub fn run_mnist_training() {
         }
     };
 
-    let (train_dataset, test_dataset) = match load_mnist_dataset(&data_dir, 5) {
+    let (train_dataset, test_dataset) = match load_mnist_dataset(&data_dir, 100) {
         Ok(data) => data,
         Err(e) => {
             println!("Error loading dataset: {}", e);

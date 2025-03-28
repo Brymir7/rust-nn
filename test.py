@@ -5,15 +5,16 @@ import torchvision.transforms as transforms
 import time
 import random
 
-# Define the same model architecture as in Rust
-class SimpleNN(nn.Module):
+# Define the model architecture
+class MNISTModel(nn.Module):
     def __init__(self):
-        super(SimpleNN, self).__init__()
-        self.fc1 = nn.Linear(784, 128)
-        self.fc2 = nn.Linear(128, 10)
+        super(MNISTModel, self).__init__()
+        self.fc1 = nn.Linear(768, 1024)  # Input layer: 768 -> 1024
+        self.fc2 = nn.Linear(1024, 10)   # Output layer: 1024 -> 10 (digits)
+        self.relu = nn.ReLU()
         
     def forward(self, x):
-        hidden = self.fc1(x)
+        hidden = self.relu(self.fc1(x))
         output = self.fc2(hidden)
         return output
 
@@ -23,106 +24,113 @@ transform = transforms.Compose([transforms.ToTensor()])
 train_dataset = datasets.MNIST(root='./data', train=True, transform=transform, download=True)
 test_dataset = datasets.MNIST(root='./data', train=False, transform=transform, download=True)
 
-print("Using 100 training examples and 10 test examples")
+# Hyperparameters
+batch_size = 32
+num_epochs = 10
+learning_rate = 0.01
 
-# Hyperparameters - same as in Rust
-batch_size = 1
-num_epochs = 5
-learning_rate = 0.001
-
-# Initialize model
-model = SimpleNN()
+# Initialize model and loss function
+model = MNISTModel()
 criterion = nn.MSELoss()
 
-# Collect model parameters for manual optimization
+# Collect model parameters for manual SGD
 params = list(model.parameters())
 
-# Prepare for training
-indices = list(range(100))  # Only use first 100 examples
+# Prepare training data
+num_train_samples = 5000  # Using more samples for better training
+train_indices = list(range(num_train_samples))
+test_indices = list(range(1000))  # Using more test samples
+
+print(f"Training with {num_train_samples} examples")
 start_time = time.time()
 
 # Training loop
 for epoch in range(num_epochs):
     # Shuffle indices for this epoch
-    random.shuffle(indices)
+    random.shuffle(train_indices)
     
     total_loss = 0.0
     num_correct = 0
-    num_batches = len(indices) // batch_size
+    num_batches = len(train_indices) // batch_size
     
     for batch_idx in range(num_batches):
         batch_start = batch_idx * batch_size
-        batch_indices = indices[batch_start:batch_start + batch_size]
+        batch_end = batch_start + batch_size
+        batch_indices = train_indices[batch_start:batch_end]
         
-        # Get batch data
-        x, label = train_dataset[batch_indices[0]]
-        x = x.view(-1, 784)  # Flatten
-        
-        # Zero gradients before forward pass
+        # Zero gradients
         for param in params:
             if param.grad is not None:
                 param.grad.zero_()
         
-        # Forward pass
-        output = model(x)
+        batch_loss = 0
+        batch_correct = 0
         
-        # Create one-hot encoded target tensors
-        target = torch.zeros(batch_size, 10)
-        target[0, label] = 1.0
+        # Process each example in the batch
+        for idx in batch_indices:
+            # Get data
+            x, label = train_dataset[idx]
+            # Flatten and resize to 768 (from 784) by dropping some pixels
+            x = x.view(-1)[:768].unsqueeze(0)
+            
+            # Forward pass
+            output = model(x)
+            
+            # Create one-hot encoded target
+            target = torch.zeros(1, 10)
+            target[0, label] = 1.0
+            
+            # Compute loss
+            loss = criterion(output, target)
+            
+            # Backward pass
+            loss.backward()
+            
+            # Calculate accuracy
+            _, predicted = torch.max(output.data, 1)
+            batch_correct += (predicted == label).sum().item()
+            batch_loss += loss.item()
         
-        # Compute loss
-        loss = criterion(output, target)
-        
-        # Backward pass
-        loss.backward()
-        
-        # Manual parameter update - direct gradient descent
+        # Manual SGD update
         with torch.no_grad():
             for param in params:
                 param -= learning_rate * param.grad
         
-        # Calculate accuracy
-        _, predicted = torch.max(output.data, 1)
-        num_correct += (predicted == label).sum().item()
+        # Statistics for this batch
+        avg_loss = batch_loss / batch_size
+        total_loss += avg_loss
+        num_correct += batch_correct
         
-        loss_val = loss.item()
-        total_loss += loss_val
-        
-        print(
-            f"Epoch {epoch+1}/{num_epochs} - Example {batch_idx+1}/{num_batches} - "
-            f"Loss: {loss_val:.4f} - Accuracy: {100.0 * num_correct/(batch_idx+1):.2f}%"
-        )
+        if batch_idx % 10 == 0:
+            print(f"Epoch {epoch+1}/{num_epochs} - Batch {batch_idx+1}/{num_batches} - "
+                  f"Loss: {avg_loss:.4f} - Batch Accuracy: {100.0 * batch_correct/batch_size:.2f}%")
     
+    # Epoch statistics
+    epoch_accuracy = 100.0 * num_correct / num_train_samples
+    epoch_loss = total_loss / num_batches
     elapsed = time.time() - start_time
-    print(
-        f"Epoch {epoch+1}/{num_epochs} completed - "
-        f"Loss: {total_loss/num_batches:.4f} - "
-        f"Accuracy: {100.0 * num_correct/num_batches:.2f}% - "
-        f"Time: {elapsed:.2f}s"
-    )
+    
+    print(f"Epoch {epoch+1}/{num_epochs} completed - "
+          f"Loss: {epoch_loss:.4f} - "
+          f"Accuracy: {epoch_accuracy:.2f}% - "
+          f"Time: {elapsed:.2f}s")
 
 # Evaluate on test set
 print("\nEvaluating on test set...")
-
-test_indices = list(range(10))  # Only use first 10 test examples
 test_correct = 0
 
-for idx, test_idx in enumerate(test_indices):
-    # Get test example
-    x, label = test_dataset[test_idx]
-    x = x.view(-1, 784)  # Flatten
-    
-    # Forward pass (without tracking gradients)
-    with torch.no_grad():
+with torch.no_grad():
+    for test_idx in test_indices:
+        # Get test example
+        x, label = test_dataset[test_idx]
+        x = x.view(-1)[:768].unsqueeze(0)  # Flatten and resize to 768
+        
+        # Forward pass
         output = model(x)
-    
-    # Calculate accuracy
-    _, predicted = torch.max(output.data, 1)
-    
-    if predicted.item() == label:
-        test_correct += 1
-    
-    print(f"Test example {idx+1}: Predicted: {predicted.item()}, Actual: {label}")
+        
+        # Calculate accuracy
+        _, predicted = torch.max(output.data, 1)
+        test_correct += (predicted == label).item()
 
 test_accuracy = 100.0 * test_correct / len(test_indices)
 print(f"Test Accuracy: {test_accuracy:.2f}% ({test_correct}/{len(test_indices)})")

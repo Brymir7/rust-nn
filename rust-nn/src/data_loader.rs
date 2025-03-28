@@ -160,7 +160,7 @@ pub fn load_mnist_dataset(data_dir: &Path, percentage: usize) -> io::Result<(Mni
 
     println!("Loading test images...");
     let test_images_path = data_dir.join(TEST_IMAGES);
-    let (test_images, _) = match load_mnist_images(&test_images_path, 1) {
+    let (test_images, _) = match load_mnist_images(&test_images_path, percentage) {
         Ok(result) => {
             println!("Successfully loaded {} test images", result.0.len());
             result
