@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 use core::panic;
-use flate2::write;
-use ndarray::{Array, ArrayD, Axis, Dimension, IxDyn};
+use ndarray::{Array, ArrayD, Axis, IxDyn};
 use std::fmt::{self, Debug};
 use std::{
     cell::{RefCell, RefMut},
@@ -796,12 +795,9 @@ impl Tensor {
                                 let prev_grad_data = prev_grad.data_f32();
 
                                 // For input gradient: dL/dY · W^T
-                                // We need to ensure dimensions align correctly
 
-                                // Create result based on dimensions
                                 let result = match (prev_grad_data.ndim(), weights_data.ndim()) {
                                     (2, 2) => {
-                                        // If both are 2D matrices, use standard matrix multiplication with transposed weights
                                         let p = prev_grad_data
                                             .clone()
                                             .into_dimensionality::<ndarray::Ix2>()
@@ -870,7 +866,6 @@ impl Tensor {
                                 let input_data = input_tensor.data_f32();
                                 let prev_grad_data = prev_grad.data_f32();
 
-                                // Calculate gradient using dot product for matrix multiplication
                                 // X^T * dL/dY
                                 let result = match (input_data.ndim(), prev_grad_data.ndim()) {
                                     (2, 2) => {
@@ -887,9 +882,6 @@ impl Tensor {
                                         x_t.dot(&dy).into_dyn()
                                     }
                                     (1, 1) => {
-                                        // For single vectors, reshape to proper dimensions
-                                        // Convert x (input) to a column vector (n×1) by reshaping
-                                        // Convert dL/dY to a row vector (1×m) by reshaping
                                         let x = input_data
                                             .clone()
                                             .into_dimensionality::<ndarray::Ix1>()
@@ -899,15 +891,12 @@ impl Tensor {
                                             .into_dimensionality::<ndarray::Ix1>()
                                             .unwrap();
 
-                                        // Convert to 2D arrays with proper shapes
-                                        let x_col = x.insert_axis(ndarray::Axis(1)); // Make n×1 column vector
-                                        let dy_row = dy.insert_axis(ndarray::Axis(0)); // Make 1×m row vector
+                                        let x_col = x.insert_axis(ndarray::Axis(1));
+                                        let dy_row = dy.insert_axis(ndarray::Axis(0));
 
-                                        // Matrix multiply: (n×1) × (1×m) = n×m matrix
                                         x_col.dot(&dy_row).into_dyn()
                                     }
                                     (1, 2) => {
-                                        // Vector × Matrix case
                                         let x = input_data
                                             .clone()
                                             .into_dimensionality::<ndarray::Ix1>()
@@ -917,14 +906,11 @@ impl Tensor {
                                             .into_dimensionality::<ndarray::Ix2>()
                                             .unwrap();
 
-                                        // Convert vector to column vector
                                         let x_col = x.insert_axis(ndarray::Axis(1));
 
-                                        // Matrix multiply: (n×1) × (b×m) = n×m matrix
                                         x_col.dot(&dy).into_dyn()
                                     }
                                     (2, 1) => {
-                                        // Matrix × Vector case
                                         let x_t = input_data
                                             .t()
                                             .clone()
@@ -935,10 +921,8 @@ impl Tensor {
                                             .into_dimensionality::<ndarray::Ix1>()
                                             .unwrap();
 
-                                        // Convert gradient to row vector
                                         let dy_row = dy.insert_axis(ndarray::Axis(0));
 
-                                        // Matrix multiply: (m×b) × (1×n) = m×n matrix
                                         x_t.dot(&dy_row).into_dyn()
                                     }
                                     _ => {
