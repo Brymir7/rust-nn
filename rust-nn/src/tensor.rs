@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use core::panic;
 use ndarray::{Array, ArrayD, Axis, IxDyn};
+use ocl::{Buffer, ProQue};
 use std::fmt::{self, Debug};
 use std::{
     cell::{RefCell, RefMut},
@@ -274,6 +275,22 @@ impl TensorData {
             TensorData::F64 { data } => data.len(),
         }
     }
+    pub fn update_in_place(&mut self, new_data: &ArrayD<f32>) {
+        match self {
+            TensorData::F32 { ref mut data } => {
+                if data.shape() == new_data.shape() {
+                    data.assign(new_data);
+                } else {
+                    panic!(
+                        "Shape mismatch: expected {:?}, got {:?}",
+                        data.shape(),
+                        new_data.shape()
+                    );
+                }
+            }
+            _ => panic!("Cannot update f64 tensor with f32 data"),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -382,10 +399,9 @@ impl Tensor {
         todo!("Implement f64 tensors")
     }
 
-    pub fn from_op(data: ArrayD<f32>, op: TensorOperation) -> TensorHandle {
+    fn from_op(data: ArrayD<f32>, op: TensorOperation) -> TensorHandle {
         TENSOR_CONTEXT.with(|ctx| {
             let mut ctx_ref = ctx.borrow_mut();
-            let tensor_data = TensorData::F32 { data };
 
             if ctx_ref.tensor_cache.current_op_index < ctx_ref.tensor_cache.op_result_pointers.len()
             {
@@ -395,13 +411,13 @@ impl Tensor {
 
                 with_mut_tensor_ctx(&mut ctx_ref, handle, |tensor| match tensor {
                     Tensor::F32 {
-                        ref mut data,
+                        data: ref mut t_data,
                         ref mut graph,
                         ref mut grad,
                         ref mut requires_grad,
                         ..
                     } => {
-                        *data = tensor_data;
+                        t_data.update_in_place(&data);
                         *graph = op;
                         *grad = None;
                         *requires_grad = true;
@@ -411,6 +427,7 @@ impl Tensor {
 
                 handle
             } else {
+                let tensor_data = TensorData::F32 { data };
                 let tensor =
                     Self::create_or_update_tensor(Some(&ctx_ref), None, tensor_data, op, true);
                 let handle = TensorHandle(ctx_ref.register_tensor(tensor));
@@ -2001,3 +2018,67 @@ impl_tensorhandle_op!(Add, add, +, "add", Add);
 impl_tensorhandle_op!(Sub, sub, -, "subtract", Sub);
 impl_tensorhandle_op!(Mul, mul, *, "multiply", Mul);
 impl_tensorhandle_op!(Div, div, /, "divide", Div);
+
+// BLOCKS
+
+pub struct LinearLayer {
+    pub weights: TensorHandle,
+    pub bias: TensorHandle,
+}
+impl LinearLayer {
+    pub fn new(in_dim: usize, out_dim: usize) -> Self {
+        let weights = Tensor::random_f32(vec![in_dim, out_dim], true);
+        let bias = Tensor::random_f32(vec![out_dim], true);
+        Self { weights, bias }
+    }
+
+    pub fn forward(&self, input: &TensorHandle) -> TensorHandle {
+        let input_tensor = get_tensor(*input).unwrap();
+        let weights_tensor = get_tensor(self.weights).unwrap();
+
+        let input_data = input_tensor.data_f32();
+        let weights_data = weights_tensor.data_f32();
+
+        let input_shape = input_data.shape();
+
+        let result = if input_shape.len() == 1 {
+            let a_mat_base = weights_data
+                .view()
+                .into_dimensionality::<ndarray::Ix2>()
+                .unwrap();
+            let a_mat_t = a_mat_base.t();
+            let x_vec = input_data
+                .view()
+                .into_dimensionality::<ndarray::Ix1>()
+                .unwrap();
+
+            let mut y_vec = ndarray::Array1::zeros(a_mat_t.shape()[0]);
+            ndarray::linalg::general_mat_vec_mul(1.0, &a_mat_t, &x_vec, 0.0, &mut y_vec);
+
+            y_vec.into_dyn()
+        } else {
+            let a_mat = input_data
+                .view()
+                .into_dimensionality::<ndarray::Ix2>()
+                .unwrap();
+            let b_mat = weights_data
+                .view()
+                .into_dimensionality::<ndarray::Ix2>()
+                .unwrap();
+            // fix this is reallocating every loop
+            let mut c_mat = ndarray::Array2::zeros((a_mat.shape()[0], b_mat.shape()[1]));
+            ndarray::linalg::general_mat_mul(1.0, &a_mat, &b_mat, 0.0, &mut c_mat);
+            c_mat.into_dyn()
+        };
+
+        let result_handle = Tensor::from_op(
+            result.clone(),
+            TensorOperation::MatMul {
+                input: input.clone(),
+                weights: self.weights,
+            },
+        );
+
+        result_handle + self.bias
+    }
+}

@@ -1,7 +1,8 @@
 use crate::data_loader::{check_mnist_dataset, load_mnist_dataset, MnistDataset};
-use crate::optimizer::{Optimizer, SGD};
-use crate::tensor::{get_tensor, Tensor, TensorHandle, TensorOperation, TENSOR_CONTEXT};
-use crate::LinearLayer;
+use crate::flamer::{get_predicted_class, Flamer};
+use crate::optimizer::SGD;
+use crate::tensor::{get_tensor, LinearLayer, Tensor, TensorHandle, TensorOperation};
+
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::collections::HashSet;
@@ -36,16 +37,16 @@ pub fn run_mnist_training() {
     let hidden_size_1 = 1024;
     let num_classes = 10; // 10 digits (0-9)
 
-    let fc1 = LinearLayer::new(input_size, hidden_size_1);
-    let fc2 = LinearLayer::new(hidden_size_1, num_classes);
+    let mut fc1 = LinearLayer::new(input_size, hidden_size_1).to_gpu();
+    let mut fc2 = LinearLayer::new(hidden_size_1, num_classes).to_gpu();
 
     let params = vec![fc1.weights, fc1.bias, fc2.weights, fc2.bias];
 
     let learning_rate = 0.01;
     let momentum = 0.90;
-    let optimizer = SGD::new(learning_rate, momentum);
+    let mut optimizer = SGD::new(learning_rate, momentum);
 
-    let num_epochs = 10;
+    let num_epochs = 1;
     let mut rng = thread_rng();
 
     let mut indices: Vec<usize> = (0..train_dataset.len()).collect();
@@ -58,9 +59,9 @@ pub fn run_mnist_training() {
         let data = t.data_f32();
         Tensor::with_shape_f32(data.iter().map(|&x| x).collect(), vec![t.shape()[1]], true)
     };
-    TENSOR_CONTEXT.with_borrow_mut(|ctx| {
-        ctx.tensor_cache.start_op_index = ctx.tensor_cache.op_result_pointers.len();
-    });
+
+    let flamer = Flamer::new();
+
     for epoch in 0..num_epochs {
         indices.shuffle(&mut rng);
 
@@ -69,48 +70,40 @@ pub fn run_mnist_training() {
         let mut total_predictions = 0;
 
         for (i, &idx) in indices.iter().enumerate() {
-            optimizer.zero_grad(&params);
-            optimizer.prepare_next_iteration();
+            let (loss_val, prediction, label) =
+                flamer.training_step(&mut optimizer, &params, || {
+                    let single_index = &[idx];
+                    let (batch_image, batch_label) = train_dataset.get_batch(single_index);
+                    let image = flatten_batch(&batch_image);
+                    let label = batch_label[0];
 
-            let single_index = &[idx];
-            let (batch_image, batch_label) = train_dataset.get_batch(single_index);
-            let image = flatten_batch(&batch_image);
-            let label = batch_label[0];
-            let mut target_data = vec![0.0; num_classes];
-            target_data[label as usize] = 1.0;
-            let target = Tensor::with_shape_f32(target_data, vec![num_classes], false);
+                    let mut target_data = vec![0.0; num_classes];
+                    target_data[label as usize] = 1.0;
+                    let target = Tensor::with_shape_f32(target_data, vec![num_classes], false);
 
-            let hidden1 = fc1.forward(&image);
-            let hidden1_activated = hidden1.relu();
-            let output = fc2.forward(&hidden1_activated);
-            let loss = output.mse(&target);
-            // print_computation_graph(loss, &mut HashSet::new(), 0);
-            loss.backward();
+                    let hidden1 = fc1.forward(&image);
+                    let hidden1_activated = hidden1.relu();
+                    let output = fc2.forward(&hidden1_activated);
+                    let loss = output.mse(&target);
 
-            optimizer.step(&params);
+                    loss.backward();
 
-            let loss_val = get_tensor(loss).unwrap().data_f32()[0];
+                    (
+                        get_tensor(loss).unwrap().data_f32()[0],
+                        get_predicted_class(output),
+                        label as usize,
+                    )
+                });
+
             epoch_loss += loss_val;
+            if prediction == label {
+                correct_predictions += 1;
+            }
+            total_predictions += 1;
 
             if i % 100 == 0 {
                 println!("Epoch {}, Sample {}: Loss = {:.6}", epoch + 1, i, loss_val);
             }
-
-            let output_data = get_tensor(output).unwrap();
-            let output_data = output_data.data_f32();
-            let mut max_idx = 0;
-            let mut max_val = output_data[0];
-            for j in 1..num_classes {
-                if output_data[j] > max_val {
-                    max_val = output_data[j];
-                    max_idx = j;
-                }
-            }
-
-            if max_idx == label as usize {
-                correct_predictions += 1;
-            }
-            total_predictions += 1;
         }
 
         let avg_loss = epoch_loss / (train_dataset.len() as f32);
@@ -124,14 +117,55 @@ pub fn run_mnist_training() {
             train_accuracy
         );
 
-        evaluate_model_1d(&fc1, &fc2, &test_dataset, &flatten_batch);
+        // let test_accuracy =
+        //     flamer.execute(|| evaluate_model(&fc1, &fc2, &test_dataset, &flatten_batch));
     }
 
     let training_duration = start_time.elapsed();
     println!("Training completed in {:.2?}", training_duration);
 }
 
-/// Print the computation graph starting from a specific tensor
+/// Evaluates the model on the provided dataset and returns the accuracy
+fn evaluate_model(
+    fc1: &LinearLayer,
+    fc2: &LinearLayer,
+    dataset: &MnistDataset,
+    flatten_batch: &dyn Fn(&TensorHandle) -> TensorHandle,
+) -> f32 {
+    let mut correct_predictions = 0;
+    let mut total_predictions = 0;
+
+    for i in 0..dataset.len() {
+        let single_index = &[i];
+        let (batch_image, batch_label) = dataset.get_batch(single_index);
+        let image = flatten_batch(&batch_image);
+        let label = batch_label[0];
+
+        let hidden1 = fc1.forward(&image);
+        let hidden1_activated = hidden1.relu();
+        let output = fc2.forward(&hidden1_activated);
+
+        let predicted_class = get_predicted_class(output);
+
+        if predicted_class == label as usize {
+            correct_predictions += 1;
+        }
+        total_predictions += 1;
+    }
+
+    let accuracy = 100.0 * (correct_predictions as f32) / (total_predictions as f32);
+    println!(
+        "Test accuracy: {}/{} correct ({:.2}%)",
+        correct_predictions, total_predictions, accuracy
+    );
+
+    accuracy
+}
+
+/// Prints the computation graph starting from a specific tensor
+///
+/// This function visualizes the operations that led to the creation of a tensor,
+/// which can be useful for debugging or understanding the computational flow.
 fn print_computation_graph(handle: TensorHandle, visited: &mut HashSet<usize>, indent: usize) {
     if !visited.insert(handle.0) {
         println!(
@@ -173,7 +207,6 @@ fn print_computation_graph(handle: TensorHandle, visited: &mut HashSet<usize>, i
         indent = indent
     );
 
-    // Print gradient info if available
     match tensor.clone() {
         Tensor::F32 { grad, .. } => {
             if let Some(_) = grad {
@@ -185,14 +218,13 @@ fn print_computation_graph(handle: TensorHandle, visited: &mut HashSet<usize>, i
         _ => {}
     }
 
-    // Check what operation created this tensor
     match tensor.graph() {
         TensorOperation::Add { left, right } => {
             println!("{:indent$}     Operation: Add", "", indent = indent + 2);
             println!("{:indent$}         Left:", "", indent = indent + 2);
             print_computation_graph(left, visited, indent + 4);
             println!("{:indent$}         Right:", "", indent = indent + 2);
-            // print_computation_graph(right, visited, indent+4);
+            // print_computation_graph(right, visited, indent + 4);
         }
         TensorOperation::Sub { left, right } => {
             println!(
@@ -203,7 +235,7 @@ fn print_computation_graph(handle: TensorHandle, visited: &mut HashSet<usize>, i
             println!("{:indent$}         Left:", "", indent = indent + 2);
             print_computation_graph(left, visited, indent + 4);
             println!("{:indent$}         Right:", "", indent = indent + 2);
-            // print_computation_graph(right, visited, indent+4);
+            // print_computation_graph(right, visited, indent + 4);
         }
         TensorOperation::Mul { left, right } => {
             println!(
@@ -214,14 +246,14 @@ fn print_computation_graph(handle: TensorHandle, visited: &mut HashSet<usize>, i
             println!("{:indent$}         Left:", "", indent = indent + 2);
             print_computation_graph(left, visited, indent + 4);
             println!("{:indent$}         Right:", "", indent = indent + 2);
-            // print_computation_graph(right, visited, indent+4);
+            // print_computation_graph(right, visited, indent + 4);
         }
         TensorOperation::Div { left, right } => {
             println!("{:indent$}     Operation: Divide", "", indent = indent + 2);
             println!("{:indent$}         Left:", "", indent = indent + 2);
             print_computation_graph(left, visited, indent + 4);
             println!("{:indent$}         Right:", "", indent = indent + 2);
-            // print_computation_graph(right, visited, indent+4);
+            // print_computation_graph(right, visited, indent + 4);
         }
         TensorOperation::MatMul { input, weights } => {
             println!("{:indent$}     Operation: MatMul", "", indent = indent + 2);
@@ -231,9 +263,7 @@ fn print_computation_graph(handle: TensorHandle, visited: &mut HashSet<usize>, i
             print_computation_graph(weights, visited, indent + 4);
         }
         TensorOperation::Max {
-            input,
-            threshold,
-            mask,
+            input, threshold, ..
         } => {
             println!("{:indent$}     Operation: Max", "", indent = indent + 2);
             println!("{:indent$}         Input:", "", indent = indent + 2);
@@ -244,9 +274,6 @@ fn print_computation_graph(handle: TensorHandle, visited: &mut HashSet<usize>, i
                 threshold,
                 indent = indent + 2
             );
-
-            // println!("{:indent$}         Mask:", "", indent = indent + 2);
-            // print_computation_graph(mask, visited, indent + 4);
         }
         TensorOperation::Sum { input } => {
             println!("{:indent$}     Operation: Sum", "", indent = indent + 2);
@@ -254,52 +281,12 @@ fn print_computation_graph(handle: TensorHandle, visited: &mut HashSet<usize>, i
             print_computation_graph(input, visited, indent + 4);
         }
         _ => {
-            println!("otrher op {:?}", tensor.graph());
+            println!(
+                "{:indent$}     Other operation: {:?}",
+                "",
+                tensor.graph(),
+                indent = indent + 2
+            );
         }
     }
-}
-
-fn evaluate_model_1d(
-    fc1: &LinearLayer,
-    fc2: &LinearLayer,
-    dataset: &MnistDataset,
-    flatten_batch: &dyn Fn(&TensorHandle) -> TensorHandle,
-) -> f32 {
-    let mut correct_predictions = 0;
-    let mut total_predictions = 0;
-
-    for i in 0..dataset.len() {
-        let single_index = &[i];
-        let (batch_image, batch_label) = dataset.get_batch(single_index);
-        let image = flatten_batch(&batch_image);
-        let label = batch_label[0];
-
-        let hidden1 = fc1.forward(&image);
-        let hidden1_activated = hidden1.relu();
-        let output = fc2.forward(&hidden1_activated);
-
-        let output_data = get_tensor(output).unwrap();
-        let output_data = output_data.data_f32();
-        let mut max_idx = 0;
-        let mut max_val = output_data[0];
-        for j in 1..10 {
-            if output_data[j] > max_val {
-                max_val = output_data[j];
-                max_idx = j;
-            }
-        }
-
-        if max_idx == label as usize {
-            correct_predictions += 1;
-        }
-        total_predictions += 1;
-    }
-
-    let accuracy = 100.0 * (correct_predictions as f32) / (total_predictions as f32);
-    println!(
-        "Test accuracy: {}/{} correct ({:.2}%)",
-        correct_predictions, total_predictions, accuracy
-    );
-
-    accuracy
 }

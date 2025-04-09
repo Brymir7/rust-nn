@@ -1,5 +1,5 @@
 [package]
-name = "rust-nn"
+name = "FlameR"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,3 +12,4 @@ ndarray = { version = "0.16.0", default-features = false, features = [
     "rayon",
     "matrixmultiply-threading",
 ] }
+ocl = "0.19"
