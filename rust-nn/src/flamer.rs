@@ -2,15 +2,12 @@ use crate::optimizer::Optimizer;
 use crate::tensor::{get_tensor, Tensor, TensorHandle, TENSOR_CONTEXT};
 use std::marker::PhantomData;
 
-/// Flamer: A context manager for tensor operations that provides a cleaner
-/// interface similar to Python's "with" statement.
 pub struct Flamer<'a> {
     _phantom: PhantomData<&'a ()>,
     start_index: usize,
 }
 
 impl<'a> Flamer<'a> {
-    /// Create a new Flamer context
     pub fn new() -> Self {
         let start_index =
             TENSOR_CONTEXT.with_borrow(|ctx| ctx.tensor_cache.op_result_pointers.len());
@@ -25,21 +22,17 @@ impl<'a> Flamer<'a> {
         }
     }
 
-    /// Execute a function within this context
     pub fn execute<F, R>(&self, f: F) -> R
     where
         F: FnOnce() -> R,
     {
-        // Execute the user's function
         f()
     }
 
-    /// Get the current operation index
     pub fn current_index(&self) -> usize {
         TENSOR_CONTEXT.with_borrow(|ctx| ctx.tensor_cache.current_op_index)
     }
 
-    /// Execute a training step with optimizer
     pub fn training_step<F, R>(
         &self,
         optimizer: &mut impl Optimizer,
@@ -80,7 +73,6 @@ where
     flamer.training_step(optimizer, params, batch_fn)
 }
 
-/// Shorthand function for prediction (inference) without gradients
 pub fn predict<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
@@ -89,7 +81,6 @@ where
     flamer.execute(f)
 }
 
-/// Helper function to get the predicted class from an output tensor
 pub fn get_predicted_class(output: TensorHandle) -> usize {
     let output_data = get_tensor(output).unwrap();
     let output_data = output_data.data_f32();

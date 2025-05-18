@@ -37,8 +37,8 @@ pub fn run_mnist_training() {
     let hidden_size_1 = 1024;
     let num_classes = 10; // 10 digits (0-9)
 
-    let mut fc1 = LinearLayer::new(input_size, hidden_size_1).to_gpu();
-    let mut fc2 = LinearLayer::new(hidden_size_1, num_classes).to_gpu();
+    let mut fc1 = LinearLayer::new(input_size, hidden_size_1);
+    let mut fc2 = LinearLayer::new(hidden_size_1, num_classes);
 
     let params = vec![fc1.weights, fc1.bias, fc2.weights, fc2.bias];
 
@@ -125,7 +125,6 @@ pub fn run_mnist_training() {
     println!("Training completed in {:.2?}", training_duration);
 }
 
-/// Evaluates the model on the provided dataset and returns the accuracy
 fn evaluate_model(
     fc1: &LinearLayer,
     fc2: &LinearLayer,

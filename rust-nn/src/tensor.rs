@@ -2019,8 +2019,6 @@ impl_tensorhandle_op!(Sub, sub, -, "subtract", Sub);
 impl_tensorhandle_op!(Mul, mul, *, "multiply", Mul);
 impl_tensorhandle_op!(Div, div, /, "divide", Div);
 
-// BLOCKS
-
 pub struct LinearLayer {
     pub weights: TensorHandle,
     pub bias: TensorHandle,
